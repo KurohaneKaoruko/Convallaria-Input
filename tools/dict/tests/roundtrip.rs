@@ -44,7 +44,7 @@ fn fixtures() -> Fixtures {
 #[test]
 fn 构建_加载_查询_回环() {
     let (luna, essay, wubi) = fixtures();
-    let bytes = build_dict(&luna, &essay, &wubi, None).expect("构建失败");
+    let bytes = build_dict(&luna, &essay, &wubi, &BTreeMap::new(), None).expect("构建失败");
     let d = ime_core::dict::Dict::from_bytes(bytes).expect("加载失败");
 
     assert!(d.word_count() >= 8, "词表应含 8 个去重文本: {}", d.word_count());
@@ -86,9 +86,9 @@ fn 构建_加载_查询_回环() {
         .iter()
         .any(|&i| d.word(i).map(|w| w.text == "好").unwrap_or(false)));
 
-    // 词频一致性：raw_freq 即源词频（中国 = essay 90000000）
+    // 词频一致性：同文本多来源合并取较大者（中国：essay 90000000 vs wubi 码频 1220000000）
     let zhongguo = d.exact("p zhong guo").unwrap();
-    assert_eq!(d.word(zhongguo[0]).unwrap().raw_freq, 90000000);
+    assert_eq!(d.word(zhongguo[0]).unwrap().raw_freq, 1220000000);
 }
 
 #[test]

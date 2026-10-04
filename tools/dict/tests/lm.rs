@@ -19,6 +19,7 @@ fn mini_dict_bytes() -> Vec<u8> {
         &parse_luna(luna_text),
         &parse_essay(essay_text),
         &parse_wubi(wubi_text),
+        &std::collections::BTreeMap::new(),
         None,
     )
     .unwrap()
@@ -53,6 +54,7 @@ fn bigram训练_合并_加载_打分回环() {
         )),
         &parse_essay("天气\t800\n你好\t500\n"),
         &parse_wubi("# t\n---\nname: t\n...\n中国\tkhlk\t100\n"),
+        &std::collections::BTreeMap::new(),
         Some(&bigrams),
     )
     .unwrap();

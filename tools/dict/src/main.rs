@@ -36,11 +36,13 @@ fn cmd_build(args: &[String]) {
         std::process::exit(2);
     };
     let lm = flag_value(args, "--lm");
+    let t2s = flag_value(args, "--t2s");
     let t0 = std::time::Instant::now();
     dict::build_from_files(
         &PathBuf::from(luna),
         &PathBuf::from(essay),
         &PathBuf::from(wubi),
+        t2s.as_deref().map(PathBuf::from).as_deref(),
         lm.as_deref().map(PathBuf::from).as_deref(),
         &PathBuf::from(out),
     )

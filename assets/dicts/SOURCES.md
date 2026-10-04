@@ -7,6 +7,7 @@
 | `luna_pinyin.dict.yaml` | [rime/rime-luna-pinyin](https://github.com/rime/rime-luna-pinyin) | 单字拼音表（字 / 拼音 / 频度占比） | 单字码表、多音字推断、字频 |
 | `essay.txt` | [rime/rime-essay](https://github.com/rime/rime-essay) | 词库（词 / 词频，约 44 万行） | 多字词词表与词频 |
 | `wubi86.dict.yaml` | [rime/rime-wubi](https://github.com/rime/rime-wubi) | 五笔 86 码表（字 / 词，含显式词组码与码频） | 五笔模式码表 |
+| `t2s.txt` | [BYVoid/OpenCC](https://github.com/BYVoid/OpenCC) TSCharacters.txt | 繁→简单字映射（Apache-2.0） | essay 繁体词库构建期转简体 |
 
 `*.LICENSE` 为对应来源仓库 LICENSE 的原文拷贝。
 

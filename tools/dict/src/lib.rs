@@ -4,6 +4,7 @@
 //! - luna：单字拼音表（字 / 拼音 / 频度%），提供字频与多音字推断依据
 //! - essay：词表（词 / 词频），提供多字词
 //! - wubi：五笔 86 码表（字词 / 码 / 码频），显式词组码
+//! - t2s：OpenCC 繁→简单字映射（essay 以繁体为主，构建期统一转为简体）
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -117,67 +118,142 @@ pub fn parse_wubi(content: &str) -> Vec<(String, String, u32)> {
         .collect()
 }
 
-/// 文本 → 词 ID 归并表（同文本只保留一个词 ID）。
-struct Interner {
-    ids: BTreeMap<String, u32>,
-    builder: DictBuilder,
+/// 解析 OpenCC 繁→简单字映射：`繁字\t简字 [简字2...]`（取首个简字）。
+pub fn parse_t2s(content: &str) -> BTreeMap<char, char> {
+    content
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .filter_map(|line| {
+            let mut cols = line.split('\t');
+            let key = cols.next()?.trim().chars().next()?;
+            let simplified = cols.next()?.split_whitespace().next()?.chars().next()?;
+            Some((key, simplified))
+        })
+        .collect()
 }
 
-impl Interner {
-    fn intern(&mut self, text: &str, raw_freq: u32, logp: f32) -> u32 {
-        if let Some(&id) = self.ids.get(text) {
-            return id;
-        }
-        let id = self.builder.push_word(text, raw_freq, logp);
-        self.ids.insert(text.to_string(), id);
-        id
-    }
+/// 词条来源（决定 logp 计算方式）。
+#[derive(Clone, Copy, PartialEq)]
+enum Source {
+    /// luna 单字：weight 为频度百分比。
+    Char(f32),
+    /// essay 词：freq 即词频。
+    Word,
+    /// 仅五笔来源：低先验。
+    WubiOnly,
 }
 
 /// 编译词典二进制（可合并 n-gram 表）。
+///
+/// `t2s` 为繁→简单字映射（可为空表 = 不转换）。essay 词库以繁体为主，
+/// 构建期统一转简体；繁简同形词条归并时词频取较大者。
 pub fn build_dict(
     luna: &BTreeMap<char, (String, f32)>,
     essay: &[(String, u32)],
     wubi: &[(String, String, u32)],
+    t2s: &BTreeMap<char, char>,
     lm: Option<&[(u32, u32, f32)]>,
 ) -> Result<Vec<u8>, BuildError> {
+    let conv = |c: char| *t2s.get(&c).unwrap_or(&c);
     let char_mass: f32 = luna.values().map(|(_, w)| *w).sum();
     let word_mass: u64 = essay.iter().map(|(_, f)| *f as u64).sum();
 
-    let mut interner = Interner {
-        ids: BTreeMap::new(),
-        builder: DictBuilder::default(),
+    // —— 阶段一：词条归并（简体为键；繁简同形取词频较大者）——
+    // text → (raw_freq, source)
+    let mut lexicon: BTreeMap<String, (u32, Source)> = BTreeMap::new();
+    let merge = |text: String, freq: u32, source: Source, lexicon: &mut BTreeMap<String, (u32, Source)>| {
+        match lexicon.entry(text) {
+            std::collections::btree_map::Entry::Vacant(e) => {
+                e.insert((freq, source));
+            }
+            std::collections::btree_map::Entry::Occupied(mut e) => {
+                let (f, src) = e.get_mut();
+                if freq > *f {
+                    *f = freq;
+                    *src = source;
+                }
+            }
+        }
     };
+
+    // 转换后字符 → 最高频读音（供词的拼音码推断）
+    let mut char_pinyin: BTreeMap<char, (String, f32)> = BTreeMap::new();
+    for (&c, (pinyin, weight)) in luna {
+        let cs = conv(c);
+        merge(cs.to_string(), (weight * 10_000.0).round() as u32, Source::Char(*weight), &mut lexicon);
+        match char_pinyin.entry(cs) {
+            std::collections::btree_map::Entry::Vacant(e) => {
+                e.insert((pinyin.clone(), *weight));
+            }
+            std::collections::btree_map::Entry::Occupied(mut e) => {
+                // 同一简体字多个繁体来源：保留更高字频的读音
+                if *weight > e.get().1 {
+                    e.insert((pinyin.clone(), *weight));
+                }
+            }
+        }
+    }
+
+    for (text, freq) in essay {
+        let simplified: String = text.chars().map(conv).collect();
+        merge(simplified, *freq, Source::Word, &mut lexicon);
+    }
+    for (text, _, weight) in wubi {
+        let simplified: String = text.chars().map(conv).collect();
+        merge(simplified, *weight, Source::WubiOnly, &mut lexicon);
+    }
+
+    // —— 阶段二：产出词表与码表 ——
+    let mut builder = DictBuilder::default();
+    let mut ids: BTreeMap<String, u32> = BTreeMap::new();
+    for (text, (freq, source)) in &lexicon {
+        let logp = match source {
+            Source::Char(w) => (w / char_mass).ln() - CHAR_PENALTY,
+            Source::Word => {
+                if word_mass > 0 {
+                    (*freq as f64 / word_mass as f64).ln() as f32
+                } else {
+                    -25.0
+                }
+            }
+            Source::WubiOnly => -25.0,
+        };
+        let id = builder.push_word(text, *freq, logp);
+        ids.insert(text.clone(), id);
+    }
+
     let mut pinyin_codes: BTreeMap<String, Vec<u32>> = BTreeMap::new();
     let mut wubi_codes: BTreeMap<String, Vec<u32>> = BTreeMap::new();
 
-    // 1) 单字：拼音码 + 字频归一 logp（带单字折扣）
-    for (&c, (pinyin, weight)) in luna {
-        let logp = (weight / char_mass).ln() - CHAR_PENALTY;
-        let raw_freq = (weight * 10_000.0).round() as u32;
-        let id = interner.intern(&c.to_string(), raw_freq, logp);
-        pinyin_codes
-            .entry(format!("{} {}", NS_PINYIN as char, pinyin))
-            .or_default()
-            .push(id);
+    // luna 单字拼音码
+    for (&c, (pinyin, _)) in luna {
+        let cs = conv(c);
+        if let Some(&id) = ids.get(cs.to_string().as_str()) {
+            pinyin_codes
+                .entry(format!("{} {}", NS_PINYIN as char, pinyin))
+                .or_default()
+                .push(id);
+        }
     }
 
-    // 2) 多字词：essay 词频归一；拼音码按各字最高频读音推断（生僻字词跳过拼音码）
-    for (text, freq) in essay {
+    // essay 词拼音码（按各字最高频读音推断；生僻字词跳过拼音码）
+    for (text, _) in essay {
+        let simplified: String = text.chars().map(conv).collect();
+        let Some(&id) = ids.get(simplified.as_str()) else {
+            continue;
+        };
         let mut syllables = Vec::with_capacity(text.chars().count());
-        let mut pinyin_ok = true;
-        for c in text.chars() {
-            match luna.get(&c) {
-                Some((pinyin, _)) => syllables.push(pinyin.clone()),
+        let mut ok = true;
+        for c in simplified.chars() {
+            match char_pinyin.get(&c) {
+                Some((p, _)) => syllables.push(p.clone()),
                 None => {
-                    pinyin_ok = false;
+                    ok = false;
                     break;
                 }
             }
         }
-        let logp = if word_mass > 0 { ((*freq as f64) / (word_mass as f64)).ln() as f32 } else { -25.0 };
-        let id = interner.intern(text, *freq, logp);
-        if pinyin_ok && syllables.len() <= MAX_SYLLABLES {
+        if ok && syllables.len() <= MAX_SYLLABLES {
             pinyin_codes
                 .entry(format!("{} {}", NS_PINYIN as char, syllables.join(" ")))
                 .or_default()
@@ -185,26 +261,28 @@ pub fn build_dict(
         }
     }
 
-    // 3) 五笔码（显式词组码；新文本以低先验入库）
-    for (text, code, weight) in wubi {
-        let id = interner.intern(text, *weight, -25.0);
-        wubi_codes
-            .entry(format!("{} {}", NS_WUBI as char, code))
-            .or_default()
-            .push(id);
+    // 五笔码（文本已转换）
+    for (text, code, _) in wubi {
+        let simplified: String = text.chars().map(conv).collect();
+        if let Some(&id) = ids.get(simplified.as_str()) {
+            wubi_codes
+                .entry(format!("{} {}", NS_WUBI as char, code))
+                .or_default()
+                .push(id);
+        }
     }
 
-    for (code, mut ids) in pinyin_codes.into_iter().chain(wubi_codes) {
-        ids.sort();
-        ids.dedup();
-        interner.builder.push_code(code, ids);
+    for (code, mut list) in pinyin_codes.into_iter().chain(wubi_codes) {
+        list.sort();
+        list.dedup();
+        builder.push_code(code, list);
     }
     if let Some(lm) = lm {
         for &(prev, cur, logp) in lm {
-            interner.builder.push_bigram(prev, cur, logp);
+            builder.push_bigram(prev, cur, logp);
         }
     }
-    Ok(interner.builder.finish()?)
+    Ok(builder.finish()?)
 }
 
 /// 训练词级 bigram 表：输入以空白分词、按行分句的语料。
@@ -247,22 +325,27 @@ pub fn build_lm(dict_bytes: &[u8], corpus: &str) -> Result<Vec<u8>, BuildError> 
     Ok(ime_core::format::write_lm(&bigrams))
 }
 
-/// 读原始文件 → 输出二进制词典（可选合并 `lm.bin`）。
+/// 读原始文件 → 输出二进制词典（可选合并 `lm.bin`；`t2s_path` 提供繁简映射）。
 pub fn build_from_files(
     luna_path: &std::path::Path,
     essay_path: &std::path::Path,
     wubi_path: &std::path::Path,
+    t2s_path: Option<&std::path::Path>,
     lm_path: Option<&std::path::Path>,
     out_path: &std::path::Path,
 ) -> Result<(), BuildError> {
     let luna = parse_luna(&std::fs::read_to_string(luna_path)?);
     let essay = parse_essay(&std::fs::read_to_string(essay_path)?);
     let wubi = parse_wubi(&std::fs::read_to_string(wubi_path)?);
+    let t2s = match t2s_path {
+        Some(p) => parse_t2s(&std::fs::read_to_string(p)?),
+        None => BTreeMap::new(),
+    };
     let lm = match lm_path {
         Some(p) => Some(ime_core::format::parse_lm(&std::fs::read(p)?)?),
         None => None,
     };
-    let bytes = build_dict(&luna, &essay, &wubi, lm.as_deref())?;
+    let bytes = build_dict(&luna, &essay, &wubi, &t2s, lm.as_deref())?;
     if let Some(dir) = out_path.parent() {
         std::fs::create_dir_all(dir)?;
     }
