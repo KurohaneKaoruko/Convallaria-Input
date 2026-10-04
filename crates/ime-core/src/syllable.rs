@@ -116,7 +116,13 @@ pub fn all_splits(letters: &str, max_syllables: usize) -> Vec<Vec<String>> {
     }
     let mut out = Vec::new();
     let mut head = Vec::new();
-    dfs(letters.as_bytes(), &mut head, &mut out, max_syllables, syllable_prefixes());
+    dfs(
+        letters.as_bytes(),
+        &mut head,
+        &mut out,
+        max_syllables,
+        syllable_prefixes(),
+    );
     out
 }
 
@@ -129,7 +135,6 @@ pub fn all_splits(letters: &str, max_syllables: usize) -> Vec<Vec<String>> {
 /// - 先做可达边界 DP 筛出可行端点，再对可行弧枚举切分（每弧上限 4 种），避免全量枚举爆炸
 #[allow(clippy::needless_range_loop)] // 弧端点是字符下标，与 letters 偏移表耦合
 pub fn word_arcs(raw: &str, max_syllables: usize) -> Vec<Arc> {
-
     let chars: Vec<char> = raw.chars().collect();
     let n = chars.len();
     let mut arcs: Vec<Arc> = Vec::new();
@@ -140,7 +145,8 @@ pub fn word_arcs(raw: &str, max_syllables: usize) -> Vec<Arc> {
         let mut letters: Vec<(usize, char)> = Vec::new();
         let mut apos: Vec<usize> = Vec::new();
         let limit = n.min(start + max_syllables * 7);
-        for end in start..limit { /* 保留：end 为字符位置，与 letters 映射耦合 */
+        for end in start..limit {
+            /* 保留：end 为字符位置，与 letters 映射耦合 */
             match chars[end].to_ascii_lowercase() {
                 c @ 'a'..='z' => letters.push((end, c)),
                 '\'' => apos.push(end),
@@ -195,9 +201,9 @@ pub fn word_arcs(raw: &str, max_syllables: usize) -> Vec<Arc> {
                     idx += syl.chars().count();
                 }
                 // 每个分隔符必须对齐某音节起点，或为弧尾字符
-                let aligned = apos.iter().all(|&k| {
-                    starts_at.contains(&(k + 1)) || k + 1 == end
-                });
+                let aligned = apos
+                    .iter()
+                    .all(|&k| starts_at.contains(&(k + 1)) || k + 1 == end);
                 if !aligned {
                     continue;
                 }
@@ -237,11 +243,16 @@ mod tests {
     fn 无歧义切分_nihao() {
         let arcs = word_arcs("nihao", 6);
         // ni + hao 必须成弧
-        assert!(arcs
-            .iter()
-            .any(|a| a.start == 0 && a.end == 5 && a.code == "ni hao"));
+        assert!(
+            arcs.iter()
+                .any(|a| a.start == 0 && a.end == 5 && a.code == "ni hao")
+        );
         // 也允许中途前缀弧（ni / nih 等），但 nihao 不应是单音节
-        assert!(!arcs.iter().any(|a| a.start == 0 && a.end == 5 && !a.code.contains(' ')));
+        assert!(
+            !arcs
+                .iter()
+                .any(|a| a.start == 0 && a.end == 5 && !a.code.contains(' '))
+        );
     }
 
     #[test]
@@ -256,9 +267,16 @@ mod tests {
     #[test]
     fn 显式分隔符_xian() {
         let arcs = word_arcs("xi'an", 6);
-        assert!(arcs.iter().any(|a| a.start == 0 && a.end == 5 && a.code == "xi an"));
+        assert!(
+            arcs.iter()
+                .any(|a| a.start == 0 && a.end == 5 && a.code == "xi an")
+        );
         // 显式分隔后，xian（单音节）不应跨分隔符成弧
-        assert!(!arcs.iter().any(|a| a.start == 0 && a.end == 5 && a.code == "xian"));
+        assert!(
+            !arcs
+                .iter()
+                .any(|a| a.start == 0 && a.end == 5 && a.code == "xian")
+        );
     }
 
     #[test]

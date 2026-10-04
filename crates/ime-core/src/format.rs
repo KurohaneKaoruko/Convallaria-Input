@@ -67,7 +67,14 @@ pub(crate) fn read_word_ref_at(bytes: &[u8], pos: usize) -> Option<(WordRef<'_>,
     let text = std::str::from_utf8(&body[2..2 + len]).ok()?;
     let raw_freq = u32::from_le_bytes(body[2 + len..6 + len].try_into().ok()?);
     let logp = f32::from_le_bytes(body[6 + len..10 + len].try_into().ok()?);
-    Some((WordRef { text, raw_freq, logp }, pos + total))
+    Some((
+        WordRef {
+            text,
+            raw_freq,
+            logp,
+        },
+        pos + total,
+    ))
 }
 
 pub(crate) fn read_word_at(bytes: &[u8], pos: usize) -> Option<(WordRecord, usize)> {
@@ -77,7 +84,14 @@ pub(crate) fn read_word_at(bytes: &[u8], pos: usize) -> Option<(WordRecord, usiz
     let text = String::from_utf8(body[2..2 + len].to_vec()).ok()?;
     let raw_freq = u32::from_le_bytes(body[2 + len..6 + len].try_into().ok()?);
     let logp = f32::from_le_bytes(body[6 + len..10 + len].try_into().ok()?);
-    Some((WordRecord { text, raw_freq, logp }, pos + total))
+    Some((
+        WordRecord {
+            text,
+            raw_freq,
+            logp,
+        },
+        pos + total,
+    ))
 }
 
 /// `dict.bin` 校验与区段定位结果（借用底层字节）。
@@ -113,7 +127,8 @@ impl<'a> DictData<'a> {
         for i in 0..word_count {
             let (_, next) = read_word_at(bytes, cur)
                 .ok_or_else(|| FormatError(format!("词表损坏 @ 词 {i}")))?;
-            let expected = words_start + u32_at(bytes, offsets_start + i as usize * 4, "word_offsets")? as usize;
+            let expected = words_start
+                + u32_at(bytes, offsets_start + i as usize * 4, "word_offsets")? as usize;
             if cur != expected {
                 return Err(FormatError(format!("词 {i} 偏移不符: {cur} != {expected}")));
             }

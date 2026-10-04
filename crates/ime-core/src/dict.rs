@@ -6,7 +6,9 @@ use std::path::Path;
 use fst::{IntoStreamer, Streamer};
 use memmap2::Mmap;
 
-use crate::format::{read_word_ref_at, u32_at, DictData, FormatError, WordRef, MAX_POSTINGS_PER_CODE};
+use crate::format::{
+    DictData, FormatError, MAX_POSTINGS_PER_CODE, WordRef, read_word_ref_at, u32_at,
+};
 
 /// 词典打开/查询错误。
 #[derive(Debug, thiserror::Error)]
@@ -137,7 +139,8 @@ impl Dict {
                 .map(|i| self.posting(i as usize))
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(|| FormatError("posting 越界".into()))?;
-            let code_str = std::str::from_utf8(code).map_err(|e| FormatError(format!("码非 UTF-8: {e}")))?;
+            let code_str =
+                std::str::from_utf8(code).map_err(|e| FormatError(format!("码非 UTF-8: {e}")))?;
             n += 1;
             if !sink(code_str, &ids) {
                 break;
@@ -160,7 +163,9 @@ impl Dict {
             let q = u32::from_le_bytes(c[4..8].try_into().ok()?);
             match (p, q).cmp(&(prev, cur)) {
                 std::cmp::Ordering::Less => lo = mid + 1,
-                std::cmp::Ordering::Equal => return Some(f32::from_le_bytes(c[8..12].try_into().ok()?)),
+                std::cmp::Ordering::Equal => {
+                    return Some(f32::from_le_bytes(c[8..12].try_into().ok()?));
+                }
                 std::cmp::Ordering::Greater => hi = mid,
             }
         }

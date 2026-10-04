@@ -3,10 +3,11 @@
 //! 需先构建真实词典：`cargo run -p dict -- build ... --out assets/dicts/convallaria.dict.bin`
 //! 词典缺失时基准自动跳过。
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 
 fn dict_path() -> Option<std::path::PathBuf> {
-    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/dicts/convallaria.dict.bin");
+    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/dicts/convallaria.dict.bin");
     if p.exists() {
         Some(p)
     } else {

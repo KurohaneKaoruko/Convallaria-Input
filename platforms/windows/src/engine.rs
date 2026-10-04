@@ -32,7 +32,9 @@ impl Engine {
             }
         }
         if let Some(appdata) = std::env::var_os("APPDATA") {
-            let p = PathBuf::from(appdata).join("Convallaria").join("dictionary.bin");
+            let p = PathBuf::from(appdata)
+                .join("Convallaria")
+                .join("dictionary.bin");
             if p.exists() {
                 return Some(p);
             }
@@ -40,7 +42,10 @@ impl Engine {
         let exe = std::env::current_exe().ok()?;
         let mut dir = exe.parent().map(PathBuf::from)?;
         for _ in 0..5 {
-            let cand = dir.join("assets").join("dicts").join("convallaria.dict.bin");
+            let cand = dir
+                .join("assets")
+                .join("dicts")
+                .join("convallaria.dict.bin");
             if cand.exists() {
                 return Some(cand);
             }
@@ -128,7 +133,12 @@ impl Engine {
 
     /// 整句候选（首选在前）。
     pub fn sentence_candidates(&self, k: usize) -> Vec<String> {
-        self.with_composer(|c| c.sentence_candidates(k).into_iter().map(|s| s.text).collect())
+        self.with_composer(|c| {
+            c.sentence_candidates(k)
+                .into_iter()
+                .map(|s| s.text)
+                .collect()
+        })
     }
 
     /// 候选窗数据：每页 page_size 条词组候选；整句首选合并进第一页首位。
@@ -145,12 +155,7 @@ impl Engine {
         }
         let total_pages = words.len().div_ceil(per).max(1);
         let page = self.page.min(total_pages - 1);
-        let items = words
-            .iter()
-            .skip(page * per)
-            .take(per)
-            .cloned()
-            .collect();
+        let items = words.iter().skip(page * per).take(per).cloned().collect();
         (items, page, total_pages)
     }
 
@@ -158,21 +163,17 @@ impl Engine {
     #[allow(dead_code)] // 5.4 候选窗「修选」交互接入时启用
     pub fn replace_segment(&mut self, segment_text: &str, replacement: u32) -> bool {
         let slot = self.with_composer(|c| {
-            c.sentence_candidates(1)
-                .first()
-                .and_then(|s| {
-                    s.slots
-                        .iter()
-                        .find(|slot| {
-                            c.word_text(slot.word)
-                                .is_some_and(|t| t == segment_text)
-                        })
-                        .cloned()
-                })
+            c.sentence_candidates(1).first().and_then(|s| {
+                s.slots
+                    .iter()
+                    .find(|slot| c.word_text(slot.word).is_some_and(|t| t == segment_text))
+                    .cloned()
+            })
         });
         match slot {
             Some(s) => {
-                self.pins.retain(|&(ps, pe, _)| !(ps == s.start && pe == s.end));
+                self.pins
+                    .retain(|&(ps, pe, _)| !(ps == s.start && pe == s.end));
                 self.pins.push((s.start, s.end, replacement));
                 true
             }
@@ -180,5 +181,3 @@ impl Engine {
         }
     }
 }
-
-

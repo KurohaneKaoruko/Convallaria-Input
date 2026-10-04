@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::format::NS_PINYIN;
-use crate::lm::{LanguageModel, BOS};
+use crate::lm::{BOS, LanguageModel};
 use crate::syllable::Arc;
 
 /// 原样字符哨兵词 ID（长句边界：码表无法解析的按键按原字符保留）。
@@ -88,8 +88,7 @@ pub fn decode(
     let chars: Vec<char> = raw.chars().collect();
     let n = chars.len();
     let by_start = arcs_by_start(arcs, n);
-    let pin_map: HashMap<(usize, usize), u32> =
-        pins.iter().map(|&(s, e, w)| ((s, e), w)).collect();
+    let pin_map: HashMap<(usize, usize), u32> = pins.iter().map(|&(s, e, w)| ((s, e), w)).collect();
 
     let mut states: States = vec![HashMap::new(); n + 1];
     insert(
@@ -107,10 +106,8 @@ pub fn decode(
 
     for pos in 0..n {
         // 快照：结束于 pos 的状态。按最优分做全局裁剪，防止状态数随输入长度爆炸
-        let mut snapshot: Vec<(u32, Vec<Entry>)> = states[pos]
-            .iter()
-            .map(|(w, es)| (*w, es.clone()))
-            .collect();
+        let mut snapshot: Vec<(u32, Vec<Entry>)> =
+            states[pos].iter().map(|(w, es)| (*w, es.clone())).collect();
         if snapshot.is_empty() {
             continue;
         }
@@ -123,9 +120,7 @@ pub fn decode(
 
         // 1) 词边
         for arc in &by_start[pos] {
-            let Some(mut words) = dict
-                .exact(&format!("{} {}", NS_PINYIN as char, arc.code))
-            else {
+            let Some(mut words) = dict.exact(&format!("{} {}", NS_PINYIN as char, arc.code)) else {
                 continue;
             };
             if let Some(&pinned) = pin_map.get(&(arc.start, arc.end)) {

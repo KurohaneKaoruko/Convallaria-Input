@@ -10,18 +10,18 @@
 
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, FillRect, InvalidateRect,
-    SelectObject, SetBkMode, SetTextColor, TextOutW, FONT_CHARSET, FONT_CLIP_PRECISION,
-    FONT_OUTPUT_PRECISION, FONT_QUALITY, HDC, HFONT, PAINTSTRUCT, TRANSPARENT,
+    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, FONT_CHARSET,
+    FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY, FillRect, HDC, HFONT, InvalidateRect,
+    PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor, TRANSPARENT, TextOutW,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW, SetWindowPos, ShowWindow,
-    CS_HREDRAW, CS_VREDRAW, HMENU, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_SHOWWINDOW, SW_HIDE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_PAINT, WNDCLASSW,
+    CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, HMENU, HWND_TOPMOST,
+    RegisterClassW, SW_HIDE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetWindowPos,
+    ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_PAINT, WNDCLASSW,
 };
-use windows_core::{w, PCWSTR};
+use windows_core::{PCWSTR, w};
 
 use crate::state;
 const CLASS_NAME: PCWSTR = w!("ConvallariaCandidateWnd");

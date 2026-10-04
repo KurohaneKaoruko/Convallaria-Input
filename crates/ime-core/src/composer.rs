@@ -7,7 +7,7 @@ use crate::format::{NS_PINYIN, NS_WUBI};
 use crate::lm::LanguageModel;
 use crate::mode::{InputMode, ShuangpinScheme};
 use crate::shuangpin;
-use crate::syllable::{word_arcs, Arc};
+use crate::syllable::{Arc, word_arcs};
 use crate::viterbi::{self, Sentence};
 
 /// 词组级候选。
@@ -221,12 +221,15 @@ impl<'a> Composer<'a> {
             .into_iter()
             .filter_map(|(id, full)| {
                 let w = self.dict.word(id)?;
-                Some((WordCandidate {
-                    word: id,
-                    text: w.text.to_string(),
-                    start: 0,
-                    end: n,
-                }, full))
+                Some((
+                    WordCandidate {
+                        word: id,
+                        text: w.text.to_string(),
+                        start: 0,
+                        end: n,
+                    },
+                    full,
+                ))
             })
             .collect();
         // 完整码覆盖优先，其后词频降序；并列按词 ID 升序（确定性）
@@ -260,9 +263,7 @@ impl<'a> Composer<'a> {
         let n = chars.len();
         let mut arcs: Vec<Arc> = Vec::new();
         // 块边界 = 跳过 `'` 后每两键
-        let idxs: Vec<usize> = (0..n)
-            .filter(|&i| chars[i] != '\'')
-            .collect();
+        let idxs: Vec<usize> = (0..n).filter(|&i| chars[i] != '\'').collect();
         for start in 0..n {
             if chars[start] == '\'' {
                 continue;
@@ -325,7 +326,15 @@ impl<'a> Composer<'a> {
 
     /// 整句候选（全拼 / 双拼）。
     pub fn sentence_candidates(&self, k: usize) -> Vec<Sentence> {
-        viterbi::decode(self.dict, self.lm, &self.raw, &self.arcs(), &self.pins, k, self.beam)
+        viterbi::decode(
+            self.dict,
+            self.lm,
+            &self.raw,
+            &self.arcs(),
+            &self.pins,
+            k,
+            self.beam,
+        )
     }
 
     /// 词文本（供前端显示与钉选匹配）。
@@ -497,17 +506,26 @@ mod tests {
         for ch in "khlk".chars() {
             c.push(ch);
         }
-        assert_eq!(c.word_candidates(5).first().map(|w| w.text.as_str()), Some("中国"));
+        assert_eq!(
+            c.word_candidates(5).first().map(|w| w.text.as_str()),
+            Some("中国")
+        );
         c.clear();
         // 一级简码：r → 的 应出现在前列
         c.push('r');
-        assert_eq!(c.word_candidates(5).first().map(|w| w.text.as_str()), Some("的"));
+        assert_eq!(
+            c.word_candidates(5).first().map(|w| w.text.as_str()),
+            Some("的")
+        );
         c.clear();
         // 词组编码
         for ch in "wqvb".chars() {
             c.push(ch);
         }
-        assert_eq!(c.word_candidates(5).first().map(|w| w.text.as_str()), Some("你好"));
+        assert_eq!(
+            c.word_candidates(5).first().map(|w| w.text.as_str()),
+            Some("你好")
+        );
     }
 
     #[test]
@@ -517,4 +535,3 @@ mod tests {
         assert_eq!(InputMode::Wubi.next(), InputMode::Quanpin);
     }
 }
-

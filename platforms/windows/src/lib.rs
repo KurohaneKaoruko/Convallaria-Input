@@ -15,12 +15,12 @@ mod engine;
 mod key_sink;
 mod state;
 
-use windows_core::{implement, BOOL, HRESULT, Interface, Result};
 use windows::Win32::Foundation::{CLASS_E_CLASSNOTAVAILABLE, E_POINTER, S_OK};
 use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
 use windows::Win32::UI::TextServices::{
     ITfKeyEventSink, ITfTextInputProcessor, ITfTextInputProcessor_Impl, ITfThreadMgr,
 };
+use windows_core::{BOOL, HRESULT, Interface, Result, implement};
 
 /// 本文本服务的 CLSID。
 pub const TIP_CLSID: windows_core::GUID =
@@ -65,7 +65,8 @@ impl ITfTextInputProcessor_Impl for TipService_Impl {
         // 解除建议并清理线程状态
         state::with(|t| {
             if let Some(mgr) = t.thread_mgr.clone()
-                && let Ok(keystroke) = mgr.cast::<windows::Win32::UI::TextServices::ITfKeystrokeMgr>()
+                && let Ok(keystroke) =
+                    mgr.cast::<windows::Win32::UI::TextServices::ITfKeystrokeMgr>()
             {
                 unsafe {
                     let _ = keystroke.UnadviseKeyEventSink(t.tid);

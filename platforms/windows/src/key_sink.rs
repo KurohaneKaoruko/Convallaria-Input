@@ -1,10 +1,10 @@
 //! 键盘事件池：按键状态机（组字 / 选词 / 翻页 / 中英切换 / 模式热键）。
 
-use windows_core::{implement, BOOL, Result};
+use ime_core::mode::InputMode;
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
-use windows::Win32::UI::TextServices::{ITfKeyEventSink, ITfKeyEventSink_Impl, ITfContext};
-use ime_core::mode::InputMode;
+use windows::Win32::UI::TextServices::{ITfContext, ITfKeyEventSink, ITfKeyEventSink_Impl};
+use windows_core::{BOOL, Result, implement};
 
 use crate::{candidate_window, composition, state};
 
@@ -61,7 +61,8 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
         let Some(context) = context.ok().ok().cloned() else {
             return Ok(BOOL::from(false));
         };
-        let vk = (wparam.0 & 0xFF) as u32;        let handled = state::with(|t| {
+        let vk = (wparam.0 & 0xFF) as u32;
+        let handled = state::with(|t| {
             t.context = Some(context.clone());
             // 活动视图缓存（候选窗锚定）
             let _ = composition::store_active_view(&context);

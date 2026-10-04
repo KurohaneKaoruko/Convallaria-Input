@@ -108,7 +108,8 @@ pub fn parse_wubi(content: &str) -> Vec<(String, String, u32)> {
             let code = cols.next()?.trim().to_lowercase();
             let weight: u32 = cols.next().and_then(|w| w.trim().parse().ok()).unwrap_or(0);
             let n = text.chars().count();
-            let code_ok = (1..=4).contains(&code.len()) && code.chars().all(|c| c.is_ascii_lowercase());
+            let code_ok =
+                (1..=4).contains(&code.len()) && code.chars().all(|c| c.is_ascii_lowercase());
             if (1..=8).contains(&n) && is_han_text(text) && code_ok {
                 Some((text.to_string(), code, weight))
             } else {
@@ -161,26 +162,32 @@ pub fn build_dict(
     // —— 阶段一：词条归并（简体为键；繁简同形取词频较大者）——
     // text → (raw_freq, source)
     let mut lexicon: BTreeMap<String, (u32, Source)> = BTreeMap::new();
-    let merge = |text: String, freq: u32, source: Source, lexicon: &mut BTreeMap<String, (u32, Source)>| {
-        match lexicon.entry(text) {
-            std::collections::btree_map::Entry::Vacant(e) => {
-                e.insert((freq, source));
-            }
-            std::collections::btree_map::Entry::Occupied(mut e) => {
-                let (f, src) = e.get_mut();
-                if freq > *f {
-                    *f = freq;
-                    *src = source;
+    let merge =
+        |text: String, freq: u32, source: Source, lexicon: &mut BTreeMap<String, (u32, Source)>| {
+            match lexicon.entry(text) {
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    e.insert((freq, source));
+                }
+                std::collections::btree_map::Entry::Occupied(mut e) => {
+                    let (f, src) = e.get_mut();
+                    if freq > *f {
+                        *f = freq;
+                        *src = source;
+                    }
                 }
             }
-        }
-    };
+        };
 
     // 转换后字符 → 最高频读音（供词的拼音码推断）
     let mut char_pinyin: BTreeMap<char, (String, f32)> = BTreeMap::new();
     for (&c, (pinyin, weight)) in luna {
         let cs = conv(c);
-        merge(cs.to_string(), (weight * 10_000.0).round() as u32, Source::Char(*weight), &mut lexicon);
+        merge(
+            cs.to_string(),
+            (weight * 10_000.0).round() as u32,
+            Source::Char(*weight),
+            &mut lexicon,
+        );
         match char_pinyin.entry(cs) {
             std::collections::btree_map::Entry::Vacant(e) => {
                 e.insert((pinyin.clone(), *weight));

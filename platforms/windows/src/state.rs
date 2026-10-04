@@ -4,8 +4,7 @@ use std::cell::RefCell;
 
 use windows::Win32::Foundation::RECT;
 use windows::Win32::UI::TextServices::{
-    ITfCompositionSink, ITfCompositionView, ITfContext, ITfContextView, ITfRange,
-    ITfThreadMgr,
+    ITfCompositionSink, ITfCompositionView, ITfContext, ITfContextView, ITfRange, ITfThreadMgr,
 };
 use windows_core::BOOL;
 

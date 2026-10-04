@@ -2,11 +2,15 @@
 
 use std::collections::BTreeMap;
 
-use dict::{build_dict, parse_luna, parse_essay, parse_wubi};
+use dict::{build_dict, parse_essay, parse_luna, parse_wubi};
 
 /// 最小样例语料（覆盖三种来源与多音字）。
 /// 样例语料三元组：(单字表, 词表, 五笔码表)。
-type Fixtures = (BTreeMap<char, (String, f32)>, Vec<(String, u32)>, Vec<(String, String, u32)>);
+type Fixtures = (
+    BTreeMap<char, (String, f32)>,
+    Vec<(String, u32)>,
+    Vec<(String, String, u32)>,
+);
 
 fn fixtures() -> Fixtures {
     let luna_text = concat!(
@@ -47,11 +51,19 @@ fn 构建_加载_查询_回环() {
     let bytes = build_dict(&luna, &essay, &wubi, &BTreeMap::new(), None).expect("构建失败");
     let d = ime_core::dict::Dict::from_bytes(bytes).expect("加载失败");
 
-    assert!(d.word_count() >= 8, "词表应含 8 个去重文本: {}", d.word_count());
+    assert!(
+        d.word_count() >= 8,
+        "词表应含 8 个去重文本: {}",
+        d.word_count()
+    );
 
     // 精确码：单字（码内按词频降序 → 你 在 尼 前）
     let ids = d.exact("p ni").expect("缺 p ni");
-    let texts: Vec<&str> = ids.iter().filter_map(|&i| d.word(i)).map(|w| w.text).collect();
+    let texts: Vec<&str> = ids
+        .iter()
+        .filter_map(|&i| d.word(i))
+        .map(|w| w.text)
+        .collect();
     assert_eq!(texts, vec!["你", "尼"], "码内应按词频降序: {texts:?}");
 
     // 精确码：多字词
@@ -82,9 +94,10 @@ fn 构建_加载_查询_回环() {
         true
     })
     .unwrap();
-    assert!(hits
-        .iter()
-        .any(|&i| d.word(i).map(|w| w.text == "好").unwrap_or(false)));
+    assert!(
+        hits.iter()
+            .any(|&i| d.word(i).map(|w| w.text == "好").unwrap_or(false))
+    );
 
     // 词频一致性：同文本多来源合并取较大者（中国：essay 90000000 vs wubi 码频 1220000000）
     let zhongguo = d.exact("p zhong guo").unwrap();

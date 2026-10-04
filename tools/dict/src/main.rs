@@ -10,7 +10,9 @@ fn main() {
         Some("info") => cmd_info(&args[1..]),
         _ => {
             eprintln!("用法:");
-            eprintln!("  dict build --luna <yaml> --essay <txt> --wubi <yaml> [--lm <bin>] --out <bin>");
+            eprintln!(
+                "  dict build --luna <yaml> --essay <txt> --wubi <yaml> [--lm <bin>] --out <bin>"
+            );
             eprintln!("  dict lm --dict <bin> --corpus <txt> --out <bin>");
             eprintln!("  dict info <bin>");
             std::process::exit(2);

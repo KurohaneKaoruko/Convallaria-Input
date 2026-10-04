@@ -8,12 +8,12 @@
 //! 组字文本更新直接使用建字时的 ITfRange（范围随组字自动延伸），上屏后尝试
 //! 以 QI 取得 ITfComposition::EndComposition 显式结束（QI 失败时由宿主终止回调兜底）。
 
-use windows_core::{implement, Interface, Result};
 use windows::Win32::UI::TextServices::{
-    ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext,
-    ITfContextComposition, ITfEditSession, ITfEditSession_Impl, ITfRange,
-    ITfCompositionView, TF_ES_READWRITE, TF_ES_SYNC,
+    ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfCompositionView, ITfContext,
+    ITfContextComposition, ITfEditSession, ITfEditSession_Impl, ITfRange, TF_ES_READWRITE,
+    TF_ES_SYNC,
 };
+use windows_core::{Interface, Result, implement};
 
 use crate::state;
 
@@ -95,10 +95,7 @@ impl ITfEditSession_Impl for StartSession_Impl {
         if fetched == 0 {
             return Err(windows_core::Error::from_hresult(windows_core::HRESULT(-1)));
         }
-        let replaced = std::mem::replace(
-            &mut sel[0].range,
-            std::mem::ManuallyDrop::new(None),
-        );
+        let replaced = std::mem::replace(&mut sel[0].range, std::mem::ManuallyDrop::new(None));
         let range: ITfRange = std::mem::ManuallyDrop::into_inner(replaced)
             .ok_or_else(|| windows_core::Error::from_hresult(windows_core::HRESULT(-1)))?;
 

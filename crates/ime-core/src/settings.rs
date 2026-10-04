@@ -98,19 +98,19 @@ impl ConfigStore {
         let initial = Arc::new(self.load_or_init()?);
         let snapshot = Arc::new(RwLock::new(initial));
         let (tx, rx) = std::sync::mpsc::channel::<()>();
-        let mut watcher = notify::recommended_watcher(
-            move |res: Result<notify::Event, notify::Error>| {
+        let mut watcher =
+            notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
                 if let Ok(event) = res {
-                    let touched = event.paths.iter().any(|p| {
-                        p.file_name().map(|f| f == "config.toml").unwrap_or(false)
-                    });
+                    let touched = event
+                        .paths
+                        .iter()
+                        .any(|p| p.file_name().map(|f| f == "config.toml").unwrap_or(false));
                     if touched {
                         let _ = tx.send(());
                     }
                 }
-            },
-        )
-        .map_err(std::io::Error::other)?;
+            })
+            .map_err(std::io::Error::other)?;
         watcher
             .watch(&self.path(), notify::RecursiveMode::NonRecursive)
             .map_err(std::io::Error::other)?;

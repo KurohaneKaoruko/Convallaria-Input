@@ -26,30 +26,93 @@ fn idx(s: ShuangpinScheme) -> usize {
 const FINAL_KEYS: [[(&str, char); 27]; 3] = [
     // 小鹤
     [
-        ("iong", 's'), ("uang", 'l'), ("iang", 'l'), ("uai", 'k'), ("ing", 'k'),
-        ("uan", 'r'), ("ue", 't'), ("ve", 't'), ("un", 'y'), ("uo", 'o'),
-        ("ie", 'p'), ("ong", 's'), ("ang", 'h'), ("ian", 'm'), ("an", 'j'),
-        ("ou", 'z'), ("ia", 'x'), ("ua", 'x'), ("iao", 'n'), ("ao", 'c'),
-        ("ui", 'v'), ("in", 'b'), ("iu", 'q'), ("ei", 'w'), ("ai", 'd'),
-        ("en", 'f'), ("eng", 'g'),
+        ("iong", 's'),
+        ("uang", 'l'),
+        ("iang", 'l'),
+        ("uai", 'k'),
+        ("ing", 'k'),
+        ("uan", 'r'),
+        ("ue", 't'),
+        ("ve", 't'),
+        ("un", 'y'),
+        ("uo", 'o'),
+        ("ie", 'p'),
+        ("ong", 's'),
+        ("ang", 'h'),
+        ("ian", 'm'),
+        ("an", 'j'),
+        ("ou", 'z'),
+        ("ia", 'x'),
+        ("ua", 'x'),
+        ("iao", 'n'),
+        ("ao", 'c'),
+        ("ui", 'v'),
+        ("in", 'b'),
+        ("iu", 'q'),
+        ("ei", 'w'),
+        ("ai", 'd'),
+        ("en", 'f'),
+        ("eng", 'g'),
     ],
     // 自然码
     [
-        ("iong", 's'), ("uang", 'd'), ("iang", 'd'), ("uai", 'y'), ("ing", 'y'),
-        ("uan", 'r'), ("van", 'r'), ("ue", 't'), ("ve", 't'), ("un", 'p'),
-        ("vn", 'p'), ("uo", 'o'), ("ong", 's'), ("ang", 'h'), ("ian", 'm'),
-        ("an", 'j'), ("iao", 'c'), ("ao", 'k'), ("ai", 'l'), ("ei", 'z'),
-        ("ie", 'x'), ("ui", 'v'), ("ou", 'b'), ("in", 'n'), ("iu", 'q'),
-        ("ia", 'w'), ("ua", 'w'),
+        ("iong", 's'),
+        ("uang", 'd'),
+        ("iang", 'd'),
+        ("uai", 'y'),
+        ("ing", 'y'),
+        ("uan", 'r'),
+        ("van", 'r'),
+        ("ue", 't'),
+        ("ve", 't'),
+        ("un", 'p'),
+        ("vn", 'p'),
+        ("uo", 'o'),
+        ("ong", 's'),
+        ("ang", 'h'),
+        ("ian", 'm'),
+        ("an", 'j'),
+        ("iao", 'c'),
+        ("ao", 'k'),
+        ("ai", 'l'),
+        ("ei", 'z'),
+        ("ie", 'x'),
+        ("ui", 'v'),
+        ("ou", 'b'),
+        ("in", 'n'),
+        ("iu", 'q'),
+        ("ia", 'w'),
+        ("ua", 'w'),
     ],
     // 微软
     [
-        ("iong", 's'), ("uang", 'd'), ("iang", 'd'), ("uai", 'y'), ("ing", ';'),
-        ("uan", 'r'), ("van", 'r'), ("ue", 't'), ("ve", 't'), ("un", 'p'),
-        ("vn", 'p'), ("uo", 'o'), ("ong", 's'), ("ang", 'h'), ("ian", 'm'),
-        ("an", 'j'), ("iao", 'c'), ("ao", 'k'), ("ai", 'l'), ("ei", 'z'),
-        ("ie", 'x'), ("ui", 'v'), ("ou", 'b'), ("in", 'n'), ("iu", 'q'),
-        ("ia", 'w'), ("ua", 'w'),
+        ("iong", 's'),
+        ("uang", 'd'),
+        ("iang", 'd'),
+        ("uai", 'y'),
+        ("ing", ';'),
+        ("uan", 'r'),
+        ("van", 'r'),
+        ("ue", 't'),
+        ("ve", 't'),
+        ("un", 'p'),
+        ("vn", 'p'),
+        ("uo", 'o'),
+        ("ong", 's'),
+        ("ang", 'h'),
+        ("ian", 'm'),
+        ("an", 'j'),
+        ("iao", 'c'),
+        ("ao", 'k'),
+        ("ai", 'l'),
+        ("ei", 'z'),
+        ("ie", 'x'),
+        ("ui", 'v'),
+        ("ou", 'b'),
+        ("in", 'n'),
+        ("iu", 'q'),
+        ("ia", 'w'),
+        ("ua", 'w'),
     ],
 ];
 
@@ -65,8 +128,25 @@ fn final_key(scheme: ShuangpinScheme, fin: &str) -> Option<char> {
 fn is_initial(c: char) -> bool {
     matches!(
         c,
-        'b' | 'p' | 'm' | 'f' | 'd' | 't' | 'n' | 'l' | 'g' | 'k' | 'h' | 'j' | 'q' | 'x'
-            | 'r' | 'z' | 'c' | 's' | 'y' | 'w'
+        'b' | 'p'
+            | 'm'
+            | 'f'
+            | 'd'
+            | 't'
+            | 'n'
+            | 'l'
+            | 'g'
+            | 'k'
+            | 'h'
+            | 'j'
+            | 'q'
+            | 'x'
+            | 'r'
+            | 'z'
+            | 'c'
+            | 's'
+            | 'y'
+            | 'w'
     )
 }
 
@@ -107,7 +187,11 @@ pub fn encode(scheme: ShuangpinScheme, syllable: &str) -> Option<String> {
         if let Some(key) = final_key(scheme, &s[1..]) {
             return Some(format!("{first}{key}"));
         }
-        return if s.chars().count() == 2 { Some(s) } else { None };
+        return if s.chars().count() == 2 {
+            Some(s)
+        } else {
+            None
+        };
     };
 
     // 2) 韵母 → 键
@@ -136,7 +220,12 @@ fn all_syllables() -> Vec<String> {
 pub fn decode_map(scheme: ShuangpinScheme) -> &'static HashMap<String, Vec<String>> {
     static MAPS: OnceLock<[HashMap<String, Vec<String>>; 3]> = OnceLock::new();
     &MAPS.get_or_init(|| {
-        [ShuangpinScheme::Flypy, ShuangpinScheme::Ziranma, ShuangpinScheme::Mspy].map(|sc| {
+        [
+            ShuangpinScheme::Flypy,
+            ShuangpinScheme::Ziranma,
+            ShuangpinScheme::Mspy,
+        ]
+        .map(|sc| {
             let mut m: HashMap<String, Vec<String>> = HashMap::new();
             for syl in all_syllables() {
                 if let Some(code) = encode(sc, &syl) {
@@ -155,7 +244,10 @@ pub fn decode_map(scheme: ShuangpinScheme) -> &'static HashMap<String, Vec<Strin
 /// 两键码 → 音节列表。
 pub fn decode(scheme: ShuangpinScheme, code: &str) -> &[String] {
     static EMPTY: Vec<String> = Vec::new();
-    decode_map(scheme).get(code).map(Vec::as_slice).unwrap_or(&EMPTY)
+    decode_map(scheme)
+        .get(code)
+        .map(Vec::as_slice)
+        .unwrap_or(&EMPTY)
 }
 
 #[cfg(test)]
@@ -164,21 +256,45 @@ mod tests {
 
     #[test]
     fn 小鹤关键映射() {
-        assert_eq!(encode(ShuangpinScheme::Flypy, "shuang").as_deref(), Some("ul"));
-        assert_eq!(encode(ShuangpinScheme::Flypy, "zhuang").as_deref(), Some("vl"));
-        assert_eq!(encode(ShuangpinScheme::Flypy, "mian").as_deref(), Some("mm"));
+        assert_eq!(
+            encode(ShuangpinScheme::Flypy, "shuang").as_deref(),
+            Some("ul")
+        );
+        assert_eq!(
+            encode(ShuangpinScheme::Flypy, "zhuang").as_deref(),
+            Some("vl")
+        );
+        assert_eq!(
+            encode(ShuangpinScheme::Flypy, "mian").as_deref(),
+            Some("mm")
+        );
         assert_eq!(encode(ShuangpinScheme::Flypy, "ang").as_deref(), Some("ah"));
         assert_eq!(encode(ShuangpinScheme::Flypy, "an").as_deref(), Some("aj"));
         assert_eq!(encode(ShuangpinScheme::Flypy, "ni").as_deref(), Some("ni"));
-        assert_eq!(encode(ShuangpinScheme::Flypy, "niang").as_deref(), Some("nl"));
-        assert_eq!(encode(ShuangpinScheme::Flypy, "ling").as_deref(), Some("lk"));
+        assert_eq!(
+            encode(ShuangpinScheme::Flypy, "niang").as_deref(),
+            Some("nl")
+        );
+        assert_eq!(
+            encode(ShuangpinScheme::Flypy, "ling").as_deref(),
+            Some("lk")
+        );
     }
 
     #[test]
     fn 自然码与微软映射() {
-        assert_eq!(encode(ShuangpinScheme::Ziranma, "shuang").as_deref(), Some("ud"));
-        assert_eq!(encode(ShuangpinScheme::Mspy, "shuang").as_deref(), Some("ud"));
-        assert_eq!(encode(ShuangpinScheme::Ziranma, "ling").as_deref(), Some("ly"));
+        assert_eq!(
+            encode(ShuangpinScheme::Ziranma, "shuang").as_deref(),
+            Some("ud")
+        );
+        assert_eq!(
+            encode(ShuangpinScheme::Mspy, "shuang").as_deref(),
+            Some("ud")
+        );
+        assert_eq!(
+            encode(ShuangpinScheme::Ziranma, "ling").as_deref(),
+            Some("ly")
+        );
         assert_eq!(encode(ShuangpinScheme::Mspy, "ling").as_deref(), Some("l;"));
         assert!(encode(ShuangpinScheme::Mspy, "er").is_some());
     }
