@@ -1,14 +1,14 @@
-//! Convallaria Input 安装包（单文件 setup.exe）。
+//! Convallaria Input 安装包（单文件 setup.exe，GUI 弹窗交互）。
 //!
 //! 用法：
 //! - 双击运行（或命令行直接运行）：安装；非管理员时自动弹 UAC 重启自身
 //! - `convallaria-setup.exe --uninstall`：卸载
-//! - `--silent`：结束时不等待回车
 //!
 //! 自包含：DLL 与词典在编译期嵌入（见 `include_bytes!`），
 //! 产物是单个 exe，可直接分发。
 
 #![cfg(windows)]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
 
@@ -26,7 +26,10 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::Win32::UI::Shell::SHELLEXECUTEINFOW;
-use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+use windows::Win32::UI::WindowsAndMessaging::{
+    MessageBoxW, SW_SHOWNORMAL, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK,
+    MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MESSAGEBOX_RESULT, MESSAGEBOX_STYLE, IDYES,
+};
 use windows_core::{w, GUID, PCWSTR};
 
 /// 嵌入的输入法 DLL（由 build-installer.ps1 构建到 target\pack，避免与已安装的 DLL 抢锁）。
@@ -40,71 +43,94 @@ const CAT_KEYBOARD: &str = "{34745CFF-BF55-4F84-9AD5-5B36CE96EF02}";
 const LANGID_ZH_CN: u16 = 0x0804;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+const TITLE: PCWSTR = w!("Convallaria Input（铃兰输入法）");
+
+fn msg_box(text: &str, style: MESSAGEBOX_STYLE) -> MESSAGEBOX_RESULT {
+    unsafe {
+        MessageBoxW(None, PCWSTR(wide(text).as_ptr()), TITLE, MB_TOPMOST | MB_SETFOREGROUND | style)
+    }
+}
+
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let uninstall = args.iter().any(|a| a == "--uninstall");
-    let silent = args.iter().any(|a| a == "--silent");
-
-    println!("Convallaria Input（铃兰输入法）v{VERSION}");
 
     // 非管理员 → 自提升（UAC）后退出当前实例
     if !is_elevated() {
-        println!("需要管理员权限，正在请求提权（请在 UAC 弹窗中点「是」）…");
         if !relaunch_elevated() {
-            fail("提权被取消。请右键「以管理员身份运行」后重试。");
+            msg_box("安装需要管理员权限，但提权被取消。\n请右键选择「以管理员身份运行」后重试。", MB_OK | MB_ICONERROR);
         }
         return;
     }
 
-    let code = if uninstall { uninstall_all() } else { install_all() };
-
-    if code == 0 {
-        println!("\n✔ 操作成功完成。");
-        if !uninstall {
-            println!("  按 Win+空格 或点击任务栏语言「中」图标切换到 Convallaria Input。");
+    if uninstall {
+        let code = uninstall_all();
+        if code == 0 {
+            msg_box("Convallaria Input 已卸载。\n\n注：若个别文件因被占用暂未删除，重启后将自动可删。",
+                    MB_OK | MB_ICONINFORMATION);
+        } else {
+            msg_box("卸载过程中出现错误，请截图反馈。", MB_OK | MB_ICONERROR);
         }
+        return;
     }
-    if !silent {
-        println!("\n按回车键退出…");
-        let _ = std::io::stdin().read_line(&mut String::new());
-    }
-    std::process::exit(code);
-}
 
-fn fail(msg: &str) {
-    eprintln!("✘ {msg}");
-    println!("\n按回车键退出…");
-    let _ = std::io::stdin().read_line(&mut String::new());
-    std::process::exit(1);
+    // —— 安装 ——
+    let code = install_all();
+    if code != 0 {
+        msg_box("安装过程中出现错误，请截图反馈。", MB_OK | MB_ICONERROR);
+        return;
+    }
+
+    // 询问是否设为当前输入法（默认不打扰——搜狗等既有输入法不受影响，Win+空格 可随时切换）
+    let set_current = msg_box(
+        "✔ Convallaria Input 安装完成！\n\n按 Win+空格 可随时在输入法间切换（搜狗等原输入法不受影响）。\n\n是否现在将输入切换为 Convallaria？",
+        MB_YESNO | MB_ICONQUESTION,
+    ) == IDYES;
+
+    if set_current {
+        activate_profile_for_current_user();
+        msg_box(
+            "已切换到 Convallaria。打开任意输入框（如记事本），直接打拼音即可：\n\n  • nihao → 候选窗数字选词，空格上屏\n  • 回车上屏原文，Esc 取消，Shift 切中英，Ctrl+` 切模式",
+            MB_OK | MB_ICONINFORMATION,
+        );
+    } else {
+        msg_box(
+            "已保留你当前的输入法。需要时按 Win+空格 切换到 Convallaria 即可。",
+            MB_OK | MB_ICONINFORMATION,
+        );
+    }
 }
 
 // —— 安装 ——
 
 fn install_all() -> i32 {
     // 0) 旧版本清理（幂等）
-    println!("• 清理旧版本…");
     unregister_tip();
 
     // 1) 安装目录：%ProgramFiles%\Convallaria Input
     let Some(program_files) = std::env::var_os("ProgramFiles").map(PathBuf::from) else {
-        fail("未找到 ProgramFiles 环境变量");
         return 1;
     };
     let install_dir = program_files.join("Convallaria Input");
     if std::fs::create_dir_all(&install_dir).is_err() {
-        fail(&format!("无法创建目录 {}", install_dir.display()));
         return 1;
     }
 
     // 2) 释放 DLL 与词典
     let dll_path = install_dir.join("convallaria_windows.dll");
     let dict_path = install_dir.join("dictionary.bin");
-    if let Err(e) = std::fs::write(&dll_path, IME_DLL) {
-        fail(&format!("写入 DLL 失败: {e}（若提示被占用，请先卸载旧版本并关闭输入中的应用）"));
+    if std::fs::write(&dll_path, IME_DLL).is_err() {
+        msg_box(
+            "写入 DLL 失败：旧文件可能正被使用。\n请先卸载旧版本（或重启电脑）后重新安装。",
+            MB_OK | MB_ICONERROR,
+        );
         return 1;
     }
-    if let Err(e) = std::fs::write(&dict_path, DICTIONARY) {
-        fail(&format!("写入词典失败: {e}"));
+    if std::fs::write(&dict_path, DICTIONARY).is_err() {
         return 1;
     }
     // 词典同时放到用户配置目录（引擎查找路径）
@@ -113,7 +139,6 @@ fn install_all() -> i32 {
         let _ = std::fs::create_dir_all(&dest);
         let _ = std::fs::write(dest.join("dictionary.bin"), DICTIONARY);
     }
-    println!("✔ 文件已安装到 {}", install_dir.display());
 
     // 3) 注册表：CLSID / InprocServer32
     set_reg_str(
@@ -142,11 +167,9 @@ fn install_all() -> i32 {
         "",
         "",
     );
-    println!("✔ 文本服务已注册");
 
-    // 5) 为当前用户启用语言配置
+    // 5) 为当前用户启用语言配置（出现在 Win+空格 列表中；不改变当前激活的输入法）
     enable_profile_for_current_user();
-    println!("✔ 语言配置已启用");
 
     // 6) 卸载入口（控制面板「应用和功能」）
     let setup_in_dir = install_dir.join("convallaria-setup.exe");
@@ -155,18 +178,16 @@ fn install_all() -> i32 {
     set_reg_str(&uninstall_key, "DisplayName", "Convallaria Input（铃兰输入法）");
     set_reg_str(&uninstall_key, "DisplayVersion", VERSION);
     set_reg_str(&uninstall_key, "Publisher", "Convallaria Project");
-    set_reg_str(&uninstall_key, "UninstallString", &format!("\"{}\" --uninstall --silent", setup_in_dir.display()));
+    set_reg_str(&uninstall_key, "UninstallString", &format!("\"{}\" --uninstall", setup_in_dir.display()));
     set_reg_str(&uninstall_key, "DisplayIcon", &setup_in_dir.display().to_string());
     set_reg_dword(&uninstall_key, "NoModify", 1);
     set_reg_dword(&uninstall_key, "NoRepair", 1);
-    println!("✔ 卸载入口已创建（控制面板 → 应用和功能）");
     0
 }
 
 // —— 卸载 ——
 
 fn uninstall_all() -> i32 {
-    println!("• 正在卸载 Convallaria Input…");
     unregister_tip();
 
     // 移除语言配置（对当前用户）
@@ -176,51 +197,49 @@ fn uninstall_all() -> i32 {
     unsafe {
         let _ = reg_delete_tree(
             HKEY_LOCAL_MACHINE,
-            &hstring_wide(&format!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{TIP_CLSID}")),
+            &wide(&format!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{TIP_CLSID}")),
         );
     }
 
     // 删除文件（被占用的 DLL 需要关闭输入中的应用后重试或重启后删除）
-    let mut locked = false;
     if let Some(program_files) = std::env::var_os("ProgramFiles").map(PathBuf::from) {
         let dir = program_files.join("Convallaria Input");
         if dir.exists() {
-            match std::fs::remove_dir_all(&dir) {
-                Ok(()) => println!("✔ 文件已删除"),
-                Err(e) => {
-                    locked = true;
-                    println!("⚠ 部分文件暂无法删除（{e}）：请关闭正在输入的应用后重试，或重启后手动删除 {}", dir.display());
-                }
-            }
+            let _ = std::fs::remove_dir_all(&dir);
         }
     }
     if let Some(appdata) = std::env::var_os("APPDATA").map(PathBuf::from) {
         let _ = std::fs::remove_file(appdata.join("Convallaria").join("dictionary.bin"));
     }
-    let _ = locked;
     0
 }
 
 /// 注销 TIP 相关注册表树。
 fn unregister_tip() {
     unsafe {
-        let _ = reg_delete_tree(HKEY_LOCAL_MACHINE, &hstring_wide(&format!("SOFTWARE\\Microsoft\\CTF\\TIP\\{TIP_CLSID}")));
-        let _ = reg_delete_tree(HKEY_LOCAL_MACHINE, &hstring_wide(&format!("SOFTWARE\\Classes\\CLSID\\{TIP_CLSID}")));
-        let _ = reg_delete_tree(HKEY_LOCAL_MACHINE, &hstring_wide(&format!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{TIP_CLSID}")));
+        let _ = reg_delete_tree(HKEY_LOCAL_MACHINE, &wide(&format!("SOFTWARE\\Microsoft\\CTF\\TIP\\{TIP_CLSID}")));
+        let _ = reg_delete_tree(HKEY_LOCAL_MACHINE, &wide(&format!("SOFTWARE\\Classes\\CLSID\\{TIP_CLSID}")));
+        let _ = reg_delete_tree(HKEY_LOCAL_MACHINE, &wide(&format!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{TIP_CLSID}")));
     }
 }
 
 // —— TSF 语言配置 ——
 
+/// 仅启用（出现在切换列表），不改变当前激活的输入法。
 fn enable_profile_for_current_user() {
-    set_profile_enabled(true);
+    set_profile_enabled(true, false);
 }
 
 fn disable_profile_for_current_user() {
-    set_profile_enabled(false);
+    set_profile_enabled(false, false);
 }
 
-fn set_profile_enabled(enable: bool) {
+/// 激活为当前输入法（用户在弹窗中选择「是」时调用）。
+fn activate_profile_for_current_user() {
+    set_profile_enabled(true, true);
+}
+
+fn set_profile_enabled(enable: bool, activate: bool) {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         if let Ok(profiles) = CoCreateInstance::<_, ITfInputProcessorProfiles>(
@@ -234,11 +253,14 @@ fn set_profile_enabled(enable: bool) {
                 &clsid,
                 LANGID_ZH_CN,
                 &profile,
-                &hstring_wide("Convallaria Input\0"),
-                &hstring_wide(""),
+                &wide("Convallaria Input\0"),
+                &wide(""),
                 0,
             );
             let _ = profiles.EnableLanguageProfile(&clsid, LANGID_ZH_CN, &profile, enable);
+            if activate {
+                let _ = profiles.ActivateLanguageProfile(&clsid, LANGID_ZH_CN, &profile);
+            }
         }
         windows::Win32::System::Com::CoUninitialize();
     }
@@ -262,9 +284,6 @@ fn guid_of(s: &str) -> GUID {
     GUID::from_values(d1, d2, d3, bytes)
 }
 
-fn hstring_wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
-}
 
 // —— 注册表辅助 ——
 
@@ -273,7 +292,7 @@ fn set_reg_str(subkey: &str, name: &str, value: &str) {
         let mut hkey = HKEY::default();
         if RegCreateKeyExW(
             HKEY_LOCAL_MACHINE,
-            PCWSTR(hstring_wide(subkey).as_ptr()),
+            PCWSTR(wide(subkey).as_ptr()),
             None,
             PCWSTR::null(),
             REG_OPTION_NON_VOLATILE,
@@ -284,7 +303,7 @@ fn set_reg_str(subkey: &str, name: &str, value: &str) {
         )
         .is_ok()
         {
-            let value_w = hstring_wide(value);
+            let value_w = wide(value);
             let mut data: Vec<u8> = Vec::with_capacity(value_w.len() * 2 + 2);
             for c in &value_w {
                 data.extend_from_slice(&c.to_le_bytes());
@@ -292,7 +311,7 @@ fn set_reg_str(subkey: &str, name: &str, value: &str) {
             data.extend_from_slice(&[0, 0]);
             let _ = RegSetValueExW(
                 hkey,
-                PCWSTR(hstring_wide(name).as_ptr()),
+                PCWSTR(wide(name).as_ptr()),
                 None,
                 REG_SZ,
                 Some(&data),
@@ -307,7 +326,7 @@ fn set_reg_dword(subkey: &str, name: &str, value: u32) {
         let mut hkey = HKEY::default();
         if RegCreateKeyExW(
             HKEY_LOCAL_MACHINE,
-            PCWSTR(hstring_wide(subkey).as_ptr()),
+            PCWSTR(wide(subkey).as_ptr()),
             None,
             PCWSTR::null(),
             REG_OPTION_NON_VOLATILE,
@@ -320,7 +339,7 @@ fn set_reg_dword(subkey: &str, name: &str, value: u32) {
         {
             let _ = RegSetValueExW(
                 hkey,
-                PCWSTR(hstring_wide(name).as_ptr()),
+                PCWSTR(wide(name).as_ptr()),
                 None,
                 REG_DWORD,
                 Some(&value.to_le_bytes()),
@@ -368,8 +387,8 @@ fn relaunch_elevated() -> bool {
     // 宽字符串缓冲区必须存活到 ShellExecuteExW 调用之后：
     // SHELLEXECUTEINFOW 只存裸指针，把临时 Vec 的指针存进结构体会变成悬垂指针
     // （症状：系统弹「找不到文件『随机乱码』」）。
-    let exe_w = hstring_wide(&exe.to_string_lossy());
-    let params_w = hstring_wide(&params);
+    let exe_w = wide(&exe.to_string_lossy());
+    let params_w = wide(&params);
     let verb = w!("runas");
     unsafe {
         let mut sei = SHELLEXECUTEINFOW {
