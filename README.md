@@ -35,15 +35,27 @@ cargo bench -p ime-core --bench decode
 
 性能参考（RTX 平台 / Windows 11，详见 docs/benchmark.md）：词组级候选 ≤ 1ms（预算 30ms），18 音节整句 ≈ 98ms（预算 150ms）。
 
-## 安装（Windows，开发中）
+## 安装（Windows）
+
+**推荐：单文件安装包**
 
 ```powershell
-# 管理员 PowerShell
-platforms\windows\install.ps1     # 注册 TSF 文本服务
-platforms\windows\uninstall.ps1   # 卸载
+platforms\windows\build-installer.ps1   # 产出 dist\ConvallariaInput-Setup.exe（约 16.5MB，自包含 DLL 与词典）
 ```
 
-> 当前状态：MVP 骨架（可注册、可吃键、回车上屏原文）。组字串显示与候选窗交互在后续任务交付。
+双击 `dist\ConvallariaInput-Setup.exe`：
+1. UAC 弹窗点「是」（安装需要写入系统注册表，Windows 输入法机制决定的必要步骤）
+2. 自动完成：文件安装到 `%ProgramFiles%\Convallaria Input`、注册 TSF 文本服务、启用语言配置
+3. 按 Win+空格 或点击任务栏语言「中」图标切换到 Convallaria Input
+
+卸载：控制面板 → 应用和功能 → Convallaria Input → 卸载。
+
+**开发调试**（脚本方式）：
+
+```powershell
+platforms\windows\install.ps1     # 自动 UAC 提权 + 注册 + 启用语言配置
+platforms\windows\uninstall.ps1
+```
 
 ## 使用
 

@@ -15,3 +15,6 @@ openspec/
 *.rsuser
 *.suo
 Thumbs.db
+
+# 安装包产物
+dist/
