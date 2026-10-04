@@ -327,6 +327,11 @@ impl<'a> Composer<'a> {
     pub fn sentence_candidates(&self, k: usize) -> Vec<Sentence> {
         viterbi::decode(self.dict, self.lm, &self.raw, &self.arcs(), &self.pins, k, self.beam)
     }
+
+    /// 词文本（供前端显示与钉选匹配）。
+    pub fn word_text(&self, word: u32) -> Option<String> {
+        self.dict.word(word).map(|w| w.text.to_string())
+    }
 }
 
 #[cfg(test)]
