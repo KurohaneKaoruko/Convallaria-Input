@@ -123,14 +123,37 @@ fn install_all() -> i32 {
     // 2) 释放 DLL 与词典
     let dll_path = install_dir.join("convallaria_windows.dll");
     let dict_path = install_dir.join("dictionary.bin");
+
+    // 2.5) 重启管理器：自动关闭占用输入法 DLL 的应用（完成后自动恢复）
+    let rm_session = {
+        let (session, locked_by) = rm::shutdown_locking_apps(&dll_path.to_string_lossy());
+        if !locked_by.is_empty() {
+            let list = locked_by.join("、");
+            let yes = msg_box(
+                &format!(
+                    "以下应用正在使用输入法，安装需要临时关闭它们（安装完成后将自动重新打开）：\n\n{list}\n\n继续安装？"
+                ),
+                MB_YESNO | MB_ICONQUESTION,
+            );
+            if yes != IDYES {
+                rm::abort(session);
+                msg_box("安装已取消，原有输入法未受影响。", MB_OK | MB_ICONINFORMATION);
+                return 1;
+            }
+        }
+        session
+    };
+
     if std::fs::write(&dll_path, IME_DLL).is_err() {
+        rm::restart_and_end(rm_session);
         msg_box(
-            "写入 DLL 失败：旧文件可能正被使用。\n请先卸载旧版本（或重启电脑）后重新安装。",
+            "写入 DLL 失败：有应用未能自动关闭。\n请关闭相关应用后重试，或重启电脑后再安装。",
             MB_OK | MB_ICONERROR,
         );
         return 1;
     }
     if std::fs::write(&dict_path, DICTIONARY).is_err() {
+        rm::restart_and_end(rm_session);
         return 1;
     }
     // 词典同时放到用户配置目录（引擎查找路径）
@@ -182,6 +205,9 @@ fn install_all() -> i32 {
     set_reg_str(&uninstall_key, "DisplayIcon", &setup_in_dir.display().to_string());
     set_reg_dword(&uninstall_key, "NoModify", 1);
     set_reg_dword(&uninstall_key, "NoRepair", 1);
+
+    // 恢复被临时关闭的应用
+    rm::restart_and_end(rm_session);
     0
 }
 
@@ -201,7 +227,16 @@ fn uninstall_all() -> i32 {
         );
     }
 
-    // 删除文件（被占用的 DLL 需要关闭输入中的应用后重试或重启后删除）
+    // 删除文件：先用重启管理器关闭占用输入法的应用
+    let dll_path = std::env::var_os("ProgramFiles")
+        .map(PathBuf::from)
+        .map(|pf| pf.join("Convallaria Input").join("convallaria_windows.dll"));
+    let (rm_session, _) = dll_path
+        .as_deref()
+        .map(|p| p.to_string_lossy().into_owned())
+        .map(|ref p| rm::shutdown_locking_apps(p))
+        .unwrap_or((0, Vec::new()));
+
     if let Some(program_files) = std::env::var_os("ProgramFiles").map(PathBuf::from) {
         let dir = program_files.join("Convallaria Input");
         if dir.exists() {
@@ -211,6 +246,7 @@ fn uninstall_all() -> i32 {
     if let Some(appdata) = std::env::var_os("APPDATA").map(PathBuf::from) {
         let _ = std::fs::remove_file(appdata.join("Convallaria").join("dictionary.bin"));
     }
+    rm::restart_and_end(rm_session);
     0
 }
 
@@ -351,6 +387,108 @@ fn set_reg_dword(subkey: &str, name: &str, value: u32) {
 
 unsafe fn reg_delete_tree(root: HKEY, subkey: &[u16]) -> WIN32_ERROR {
     unsafe { windows::Win32::System::Registry::RegDeleteTreeW(root, PCWSTR(subkey.as_ptr())) }
+}
+
+// —— 重启管理器：自动关闭占用输入法文件的应用（安装后自动恢复）——
+
+mod rm {
+    use windows::Win32::Foundation::WIN32_ERROR;
+    use windows::Win32::System::RestartManager::*;
+    use windows_core::PCWSTR;
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// 关闭正在占用 `path` 的应用。返回 (会话句柄, 被关闭的应用名列表)；
+    /// 会话句柄非零时调用方须在完成后执行 [`restart`] 与 [`end`]。
+    pub fn shutdown_locking_apps(path: &str) -> (u32, Vec<String>) {
+        unsafe {
+            let mut session = 0u32;
+            let mut key = [0u16; 33]; // CCH_RM_SESSION_KEY + 1
+            if RmStartSession(&mut session, None, windows_core::PWSTR(key.as_mut_ptr())) != WIN32_ERROR(0) {
+                return (0, Vec::new());
+            }
+            let file: Vec<u16> = wide(path);
+            if RmRegisterResources(session, Some(&[PCWSTR(file.as_ptr())]), None, None)
+                != WIN32_ERROR(0)
+            {
+                let _ = RmEndSession(session);
+                return (0, Vec::new());
+            }
+
+            // 两次调用：先取所需容量，再取列表
+            let mut needed = 0u32;
+            let mut count = 0u32;
+            let mut reboot_reasons = 0u32;
+            let _ = RmGetList(
+                session,
+                &mut needed,
+                &mut count,
+                None,
+                &mut reboot_reasons,
+            );
+            if needed == 0 {
+                let _ = RmEndSession(session);
+                return (0, Vec::new());
+            }
+            let mut apps = vec![RM_PROCESS_INFO::default(); needed as usize];
+            count = needed;
+            if RmGetList(
+                session,
+                &mut needed,
+                &mut count,
+                Some(apps.as_mut_ptr()),
+                &mut reboot_reasons,
+            ) != WIN32_ERROR(0)
+            {
+                let _ = RmEndSession(session);
+                return (0, Vec::new());
+            }
+            apps.truncate(count as usize);
+            let names: Vec<String> = apps
+                .iter()
+                .map(|a| {
+                    let end = a
+                        .strAppName
+                        .iter()
+                        .position(|&c| c == 0)
+                        .unwrap_or(a.strAppName.len());
+                    String::from_utf16_lossy(&a.strAppName[..end])
+                })
+                .collect();
+            if names.is_empty() {
+                let _ = RmEndSession(session);
+                return (0, Vec::new());
+            }
+
+            // 优雅关闭（应用会收到保存提示）；失败由调用方兜底
+            if RmShutdown(session, 0, None) != WIN32_ERROR(0) {
+                let _ = RmEndSession(session);
+                return (0, Vec::new());
+            }
+            (session, names)
+        }
+    }
+
+    /// 恢复被关闭的应用并结束会话。
+    pub fn restart_and_end(session: u32) {
+        if session != 0 {
+            unsafe {
+                let _ = RmRestart(session, None, None);
+                let _ = RmEndSession(session);
+            }
+        }
+    }
+
+    /// 结束会话（不恢复应用，用于用户取消的路径）。
+    pub fn abort(session: u32) {
+        if session != 0 {
+            unsafe {
+                let _ = RmEndSession(session);
+            }
+        }
+    }
 }
 
 // —— 提权 ——
