@@ -365,13 +365,19 @@ fn relaunch_elevated() -> bool {
     };
     let args: Vec<String> = std::env::args().skip(1).collect();
     let params = format!("\"{}\" {}", exe.display(), args.join(" "));
+    // 宽字符串缓冲区必须存活到 ShellExecuteExW 调用之后：
+    // SHELLEXECUTEINFOW 只存裸指针，把临时 Vec 的指针存进结构体会变成悬垂指针
+    // （症状：系统弹「找不到文件『随机乱码』」）。
+    let exe_w = hstring_wide(&exe.to_string_lossy());
+    let params_w = hstring_wide(&params);
+    let verb = w!("runas");
     unsafe {
         let mut sei = SHELLEXECUTEINFOW {
             cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
             fMask: windows::Win32::UI::Shell::SEE_MASK_DEFAULT,
-            lpVerb: PCWSTR(w!("runas").as_ptr()),
-            lpFile: PCWSTR(hstring_wide(&exe.to_string_lossy()).as_ptr()),
-            lpParameters: PCWSTR(hstring_wide(&params).as_ptr()),
+            lpVerb: PCWSTR(verb.as_ptr()),
+            lpFile: PCWSTR(exe_w.as_ptr()),
+            lpParameters: PCWSTR(params_w.as_ptr()),
             nShow: SW_SHOWNORMAL.0,
             ..Default::default()
         };
