@@ -54,6 +54,14 @@ fn unpack_packed(v: u64) -> (u64, u64) {
 }
 
 impl Dict {
+    /// 空词典（词典文件缺失时的兜底，所有查询返回空）。
+    pub fn empty() -> Self {
+        let bytes = crate::format::DictBuilder::default()
+            .finish()
+            .expect("空词典序列化");
+        Self::from_bytes(bytes).expect("空词典加载失败")
+    }
+
     /// 从文件打开（mmap，零拷贝）。
     pub fn open(path: impl AsRef<Path>) -> Result<Self, DictError> {
         let file = std::fs::File::open(path)?;

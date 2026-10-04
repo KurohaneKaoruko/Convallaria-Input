@@ -2,7 +2,9 @@
 resolver = "3"
 members = [
     "crates/ime-core",
+    "crates/convallaria-protocol",
     "platforms/windows",
+    "platforms/windows/server",
     "tools/dict",
     "tools/setup",
 ]

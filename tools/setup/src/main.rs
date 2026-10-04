@@ -35,6 +35,8 @@ use windows_core::{w, GUID, PCWSTR};
 
 /// 嵌入的输入法 DLL（由 build-installer.ps1 构建到 target\pack，避免与已安装的 DLL 抢锁）。
 const IME_DLL: &[u8] = include_bytes!("../../../target/pack/release/convallaria_windows.dll");
+/// 嵌入的后台服务进程（候选窗所在进程）。
+const SERVER_EXE: &[u8] = include_bytes!("../../../target/pack/release/convallaria-server.exe");
 /// 嵌入的词典。
 const DICTIONARY: &[u8] = include_bytes!("../../../assets/dicts/convallaria.dict.bin");
 
@@ -187,6 +189,16 @@ fn install_all() -> i32 {
         return 1;
     }
     log("DLL 与词典已写入");
+
+    // 2.7) 释放后台服务进程（候选窗所在进程）
+    let server_path = install_dir.join("convallaria-server.exe");
+    if let Err(e) = std::fs::write(&server_path, SERVER_EXE) {
+        rm::restart_and_end(rm_session);
+        log(&format!("失败：写服务进程: {e}"));
+        msg_box(&format!("安装失败：写入服务进程失败\n{e}"), MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
     // 词典同时放到用户配置目录（引擎查找路径）
     if let Some(appdata) = std::env::var_os("APPDATA").map(PathBuf::from) {
         let dest = appdata.join("Convallaria");
@@ -263,6 +275,17 @@ fn install_all() -> i32 {
     set_reg_dword(&uninstall_key, "NoRepair", 1);
     log("卸载入口已创建");
 
+    // 5.5) 后台服务自启动（当前用户）+ 立即启动
+    set_reg_str(
+        "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+        "Convallaria Input",
+        &format!("\"{}\"", server_path.display()),
+    );
+    match std::process::Command::new(&server_path).spawn() {
+        Ok(child) => log(&format!("后台服务已启动 pid={:?}", child.id())),
+        Err(e) => log(&format!("后台服务启动失败: {e}（首次切换输入时会自动重连）")),
+    }
+
     // 6) 询问是否设为当前输入法（默认不打扰——既有输入法不受影响，Win+空格 可随时切换）
     let set_current = msg_box(
         "✔ Convallaria Input 安装完成！\n\n按 Win+空格 可随时在输入法间切换（搜狗等原输入法不受影响）。\n\n是否现在将输入切换为 Convallaria？",
@@ -309,6 +332,32 @@ fn install_all() -> i32 {
 
 fn uninstall_all() -> i32 {
     log("== 卸载开始 ==");
+
+    // 0) 停止后台服务并移除自启动
+    let _ = std::process::Command::new("taskkill")
+        .args(["/F", "/IM", "convallaria-server.exe"])
+        .output();
+    set_reg_str(
+        "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+        "Convallaria Input",
+        "",
+    );
+    unsafe {
+        let mut hkey = HKEY::default();
+        if RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(wide("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run").as_ptr()),
+            None,
+            KEY_SET_VALUE,
+            &mut hkey,
+        )
+        .is_ok()
+        {
+            let _ = RegDeleteValueW(hkey, PCWSTR(wide("Convallaria Input").as_ptr()));
+            let _ = RegCloseKey(hkey);
+        }
+    }
+    log("后台服务已停止");
     // 安装目录里的 DLL 路径（注销与文件删除都要用）
     let dll_path = std::env::var_os("ProgramFiles")
         .map(PathBuf::from)

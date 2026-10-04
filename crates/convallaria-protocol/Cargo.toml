@@ -1,0 +1,8 @@
+[package]
+name = "convallaria-protocol"
+version = "0.1.0"
+edition = "2024"
+description = "TSF DLL 与服务进程之间的管道协议（帧格式与消息类型）"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
