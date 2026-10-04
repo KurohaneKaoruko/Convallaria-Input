@@ -1,4 +1,8 @@
 //! 线程本地上下文：TSF 输入法的一切状态都挂在宿主输入线程上。
+//!
+//! **借用规则**：每个 COM 回调入口只允许一次 [`with`]；其余代码一律通过
+//! `&mut ThreadCtx` 参数传递（`RefCell` 重入借用会 panic，panic 穿越 COM
+//! 边界会带崩宿主应用——这正是历史上「一输入就崩软件」的根因）。
 
 use std::cell::RefCell;
 
@@ -8,6 +12,7 @@ use windows::Win32::UI::TextServices::{
 };
 use windows_core::BOOL;
 
+use crate::candidate_window;
 use crate::engine::Engine;
 
 /// 每输入线程的全部状态。
@@ -51,6 +56,32 @@ impl ThreadCtx {
             shift_down: false,
         }
     }
+
+    /// 清空组字状态并隐藏候选窗。
+    pub fn clear_composition(&mut self) {
+        self.comp_range = None;
+        self.comp_view = None;
+        if let Some(engine) = self.engine.as_mut() {
+            engine.clear();
+        }
+        candidate_window::hide(self.hwnd);
+    }
+    /// 宿主撤销组字时清理本地状态。
+    pub fn on_composition_terminated(&mut self) {
+        self.clear_composition();
+    }
+
+    /// 组字区间矩形（候选窗锚定）。
+    pub fn composition_rect(&self) -> Option<RECT> {
+        let view = self.active_view.as_ref()?;
+        let range = self.comp_range.as_ref()?;
+        let mut rect = RECT::default();
+        let mut clipped = BOOL::default();
+        unsafe {
+            view.GetTextExt(0, range, &mut rect, &mut clipped).ok()?;
+        }
+        Some(rect)
+    }
 }
 
 thread_local! {
@@ -58,6 +89,8 @@ thread_local! {
 }
 
 /// 访问线程上下文（未激活时返回 None）。
+///
+/// 闭包内**禁止**再调用 `with` 或任何会内部调用 `with` 的函数。
 pub fn with<R>(f: impl FnOnce(&mut ThreadCtx) -> R) -> Option<R> {
     CTX.with(|cell| {
         let mut borrow = cell.borrow_mut();
@@ -74,66 +107,23 @@ pub fn teardown() {
     CTX.with(|cell| *cell.borrow_mut() = None);
 }
 
-// —— 组字相关便捷存取 ——
-
-pub fn comp_range() -> Option<ITfRange> {
-    with(|t| t.comp_range.clone()).flatten()
-}
-
-pub fn comp_view() -> Option<ITfCompositionView> {
-    with(|t| t.comp_view.clone()).flatten()
-}
-
-pub fn set_composition_parts(range: ITfRange, view: Option<ITfCompositionView>) {
-    with(|t| {
-        t.comp_range = Some(range);
-        t.comp_view = view;
-    });
-}
-
-pub fn clear_composition() {
-    with(|t| {
-        t.comp_range = None;
-        t.comp_view = None;
-        if let Some(engine) = t.engine.as_mut() {
-            engine.clear();
+/// COM 回调兜底：panic 不穿越 FFI 边界（否则宿主应用崩溃）。
+pub fn catch<R: Default>(f: impl FnOnce() -> R) -> R {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(_) => {
+            #[cfg(debug_assertions)]
+            {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(std::env::temp_dir().join("convallaria-debug.log"))
+                {
+                    let _ = writeln!(f, "[panic] COM 回调发生 panic，已拦截");
+                }
+            }
+            R::default()
         }
-        crate::candidate_window::hide(t.hwnd);
-    });
-}
-
-pub fn composition_sink() -> Option<ITfCompositionSink> {
-    with(|t| t.composition_sink.clone()).flatten()
-}
-
-pub fn set_active_view(view: ITfContextView) {
-    with(|t| t.active_view = Some(view));
-}
-
-pub fn active_view() -> Option<ITfContextView> {
-    with(|t| t.active_view.clone()).flatten()
-}
-
-/// 组字区间矩形（候选窗锚定）。
-pub fn composition_rect() -> Option<RECT> {
-    let view = active_view()?;
-    let range = comp_range()?;
-    let mut rect = RECT::default();
-    let mut clipped = BOOL::default();
-    unsafe {
-        view.GetTextExt(0, &range, &mut rect, &mut clipped).ok()?;
     }
-    Some(rect)
-}
-
-/// 宿主撤销组字时清理本地状态。
-pub fn on_composition_terminated() {
-    with(|t| {
-        t.comp_range = None;
-        t.comp_view = None;
-        if let Some(engine) = t.engine.as_mut() {
-            engine.clear();
-        }
-        crate::candidate_window::hide(t.hwnd);
-    });
 }

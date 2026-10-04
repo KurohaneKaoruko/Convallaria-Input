@@ -4,38 +4,55 @@
 //! 在 DoEditSession 里完成实际写入。所有会话使用 TF_ES_SYNC | TF_ES_READWRITE
 //! （按键事件回调内同步会话是 TSF 官方推荐用法）。
 //!
-//! 实现说明：StartComposition 后通过 EnumCompositions 取回 ITfCompositionView；
-//! 组字文本更新直接使用建字时的 ITfRange（范围随组字自动延伸），上屏后尝试
-//! 以 QI 取得 ITfComposition::EndComposition 显式结束（QI 失败时由宿主终止回调兜底）。
+//! 结果回传：编辑会话对象内无法借用线程上下文（见 state 模块的借用规则），
+//! 通过 `Arc<Mutex<…>>` 把 DoEditSession 产出的范围/视图对象带回调用方。
 
+use std::sync::{Arc, Mutex};
+
+use windows_core::{implement, Interface, Result};
 use windows::Win32::UI::TextServices::{
-    ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfCompositionView, ITfContext,
-    ITfContextComposition, ITfEditSession, ITfEditSession_Impl, ITfRange, TF_ES_READWRITE,
-    TF_ES_SYNC,
+    ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext,
+    ITfContextComposition, ITfEditSession, ITfEditSession_Impl, ITfRange,
+    ITfCompositionView, TF_ES_READWRITE, TF_ES_SYNC,
 };
-use windows_core::{Interface, Result, implement};
 
 use crate::state;
+use crate::state::ThreadCtx;
+
+#[allow(clippy::arc_with_non_send_sync)] // COM 指针仅在同一线程使用
+type Outcome<T> = Arc<Mutex<Option<T>>>;
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// 在插入点开始组字（若尚未开始）。
-pub fn ensure_started(context: &ITfContext, tid: u32) -> Result<()> {
-    if state::comp_range().is_some() {
+pub fn ensure_started(ctx: &mut ThreadCtx, context: &ITfContext) -> Result<()> {
+    if ctx.comp_range.is_some() {
         return Ok(());
     }
+    #[allow(clippy::arc_with_non_send_sync)] // COM 指针仅在同一线程使用
+    let outcome: Outcome<(ITfRange, Option<ITfCompositionView>)> = Arc::new(Mutex::new(None));
     let session: ITfEditSession = StartSession {
         context: context.clone(),
+        sink: ctx.composition_sink.clone().ok_or_else(not_ready)?,
+        outcome: Arc::clone(&outcome),
     }
     .into();
-    let hr = unsafe { context.RequestEditSession(tid, &session, TF_ES_SYNC | TF_ES_READWRITE)? };
+    let hr = unsafe { context.RequestEditSession(ctx.tid, &session, TF_ES_SYNC | TF_ES_READWRITE)? };
     if hr.is_err() {
         return Err(windows_core::Error::from_hresult(hr));
+    }
+    if let Some((range, view)) = lock(&outcome).take() {
+        ctx.comp_range = Some(range);
+        ctx.comp_view = view;
     }
     Ok(())
 }
 
 /// 更新组字串文本。
-pub fn update_text(context: &ITfContext, tid: u32, text: &str) -> Result<()> {
-    let Some(range) = state::comp_range() else {
+pub fn update_text(ctx: &mut ThreadCtx, context: &ITfContext, text: &str) -> Result<()> {
+    let Some(range) = ctx.comp_range.clone() else {
         return Ok(());
     };
     let session: ITfEditSession = WriteRangeSession {
@@ -43,7 +60,7 @@ pub fn update_text(context: &ITfContext, tid: u32, text: &str) -> Result<()> {
         text: text.to_string(),
     }
     .into();
-    let hr = unsafe { context.RequestEditSession(tid, &session, TF_ES_SYNC | TF_ES_READWRITE)? };
+    let hr = unsafe { context.RequestEditSession(ctx.tid, &session, TF_ES_SYNC | TF_ES_READWRITE)? };
     if hr.is_err() {
         return Err(windows_core::Error::from_hresult(hr));
     }
@@ -51,29 +68,34 @@ pub fn update_text(context: &ITfContext, tid: u32, text: &str) -> Result<()> {
 }
 
 /// 上屏最终文本并结束组字。
-pub fn commit(context: &ITfContext, tid: u32, text: &str) -> Result<()> {
-    let Some(range) = state::comp_range() else {
+pub fn commit(ctx: &mut ThreadCtx, context: &ITfContext, text: &str) -> Result<()> {
+    let Some(range) = ctx.comp_range.clone() else {
         return Ok(());
     };
+    let view = ctx.comp_view.clone();
     let session: ITfEditSession = CommitSession {
         range,
-        view: state::comp_view(),
+        view,
         text: text.to_string(),
     }
     .into();
-    let hr = unsafe { context.RequestEditSession(tid, &session, TF_ES_SYNC | TF_ES_READWRITE)? };
+    let hr = unsafe { context.RequestEditSession(ctx.tid, &session, TF_ES_SYNC | TF_ES_READWRITE)? };
     if hr.is_err() {
         return Err(windows_core::Error::from_hresult(hr));
     }
-    state::clear_composition();
+    ctx.clear_composition();
     Ok(())
 }
 
 /// 激活时缓存活动视图（候选窗锚定用）。
-pub fn store_active_view(context: &ITfContext) -> Result<()> {
+pub fn store_active_view(ctx: &mut ThreadCtx, context: &ITfContext) -> Result<()> {
     let view = unsafe { context.GetActiveView() }?;
-    state::set_active_view(view);
+    ctx.active_view = Some(view);
     Ok(())
+}
+
+fn not_ready() -> windows_core::Error {
+    windows_core::Error::from_hresult(windows_core::HRESULT(-1))
 }
 
 // —— 会话对象 ——
@@ -82,6 +104,8 @@ pub fn store_active_view(context: &ITfContext) -> Result<()> {
 #[implement(ITfEditSession)]
 struct StartSession {
     context: ITfContext,
+    sink: ITfCompositionSink,
+    outcome: Outcome<(ITfRange, Option<ITfCompositionView>)>,
 }
 
 impl ITfEditSession_Impl for StartSession_Impl {
@@ -101,21 +125,19 @@ impl ITfEditSession_Impl for StartSession_Impl {
 
         // 2) 创建 composition（sink 接收终止回调）
         let context_composition: ITfContextComposition = context.cast()?;
-        let sink = state::composition_sink()
-            .ok_or_else(|| windows_core::Error::from_hresult(windows_core::HRESULT(-1)))?;
         unsafe {
-            context_composition.StartComposition(ec, &range, &sink)?;
+            context_composition.StartComposition(ec, &range, &self.sink)?;
         }
 
-        // 3) 记录范围；枚举取回视图对象（用于显式 EndComposition）
-        let mut latest: Option<ITfCompositionView> = None;
+        // 3) 枚举取回视图对象（最后一个即新建的）
         let enum_comps = unsafe { context_composition.EnumCompositions()? };
+        let mut latest: Option<ITfCompositionView> = None;
         let mut buffer = [None];
         let mut fetched = 0u32;
         while unsafe { enum_comps.Next(&mut buffer, &mut fetched) }.is_ok() && fetched > 0 {
             latest = buffer[0].clone();
         }
-        state::set_composition_parts(range.clone(), latest);
+        *lock(&self.outcome) = Some((range, latest));
         Ok(())
     }
 }
@@ -167,7 +189,7 @@ impl ITfCompositionSink_Impl for CompSink_Impl {
         _ecwrite: u32,
         _composition: windows_core::Ref<'_, ITfComposition>,
     ) -> Result<()> {
-        state::on_composition_terminated();
+        state::with(|t| t.on_composition_terminated());
         Ok(())
     }
 }

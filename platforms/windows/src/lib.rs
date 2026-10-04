@@ -6,6 +6,9 @@
 //! - [`key_sink`]：键盘事件池（按键状态机）
 //! - [`candidate_window`]：候选窗（WS_POPUP 自绘）
 //! - [`state`]：线程本地上下文
+//!
+//! **健壮性**：所有 COM 回调经 `state::catch` 拦截 panic——输入法崩溃
+//! 不允许带走宿主应用。
 
 #![cfg(windows)]
 
@@ -20,7 +23,7 @@ use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
 use windows::Win32::UI::TextServices::{
     ITfKeyEventSink, ITfTextInputProcessor, ITfTextInputProcessor_Impl, ITfThreadMgr,
 };
-use windows_core::{BOOL, HRESULT, Interface, Result, implement};
+use windows_core::{implement, BOOL, HRESULT, Interface, Result};
 
 /// 本文本服务的 CLSID。
 pub const TIP_CLSID: windows_core::GUID =
@@ -28,6 +31,8 @@ pub const TIP_CLSID: windows_core::GUID =
 /// 语言 Profile GUID（zh-CN / 0x0804）。
 pub const PROFILE_GUID: windows_core::GUID =
     windows_core::GUID::from_u128(0x8A5C7B60_4C2A_4E1F_9D3B_5C0A11B2C002);
+/// 中文（简体）LANGID。
+const LANGID_ZH_CN: u16 = 0x0804;
 
 /// 文本服务对象：负责激活 / 停用。
 #[implement(ITfTextInputProcessor)]
@@ -41,40 +46,45 @@ impl TipService {
 
 impl ITfTextInputProcessor_Impl for TipService_Impl {
     fn Activate(&self, ptim: windows_core::Ref<'_, ITfThreadMgr>, tid: u32) -> Result<()> {
-        // 线程上下文初始化
-        state::init(tid);
-        state::with(|t| {
-            if let Ok(mgr) = ptim.ok() {
-                t.thread_mgr = Some(mgr.clone());
-            }
-            t.composition_sink = Some(composition::CompSink.into());
-        });
+        state::catch(|| {
+            // 线程上下文初始化
+            state::init(tid);
+            state::with(|t| {
+                if let Ok(mgr) = ptim.ok() {
+                    t.thread_mgr = Some(mgr.clone());
+                }
+                t.composition_sink = Some(composition::CompSink.into());
+            });
 
-        // 建议键盘事件池
-        if let Ok(mgr) = ptim.ok() {
-            let keystroke: windows::Win32::UI::TextServices::ITfKeystrokeMgr = mgr.cast()?;
-            let sink: ITfKeyEventSink = key_sink::KeySink::new().into();
-            unsafe {
-                keystroke.AdviseKeyEventSink(tid, &sink, true)?;
+            // 建议键盘事件池
+            if let Ok(mgr) = ptim.ok()
+                && let Ok(keystroke) = mgr.cast::<windows::Win32::UI::TextServices::ITfKeystrokeMgr>()
+            {
+                let sink: ITfKeyEventSink = key_sink::KeySink::new().into();
+                unsafe {
+                    let _ = keystroke.AdviseKeyEventSink(tid, &sink, true);
+                }
             }
-        }
+        });
         Ok(())
     }
 
     fn Deactivate(&self) -> Result<()> {
-        // 解除建议并清理线程状态
-        state::with(|t| {
-            if let Some(mgr) = t.thread_mgr.clone()
-                && let Ok(keystroke) =
-                    mgr.cast::<windows::Win32::UI::TextServices::ITfKeystrokeMgr>()
-            {
-                unsafe {
-                    let _ = keystroke.UnadviseKeyEventSink(t.tid);
+        state::catch(|| {
+            // 解除建议并清理线程状态
+            state::with(|t| {
+                if let Some(mgr) = t.thread_mgr.clone()
+                    && let Ok(keystroke) =
+                        mgr.cast::<windows::Win32::UI::TextServices::ITfKeystrokeMgr>()
+                {
+                    unsafe {
+                        let _ = keystroke.UnadviseKeyEventSink(t.tid);
+                    }
                 }
-            }
-            candidate_window::destroy(t.hwnd);
+                candidate_window::destroy(t.hwnd);
+            });
+            state::teardown();
         });
-        state::teardown();
         Ok(())
     }
 }
@@ -118,6 +128,53 @@ extern "system" fn DllRegisterServer() -> HRESULT {
 #[unsafe(no_mangle)]
 extern "system" fn DllUnregisterServer() -> HRESULT {
     S_OK
+}
+
+/// 为当前用户启用本输入法的语言配置（rundll32 可调）。
+///
+/// 用法：`rundll32 convallaria_windows.dll,EnableProfileForCurrentUser`
+/// 由 install.ps1 在注册完成后调用，免去手动到系统设置里添加键盘。
+#[unsafe(no_mangle)]
+extern "system" fn EnableProfileForCurrentUser(
+    _hwnd: isize,
+    _hinst: isize,
+    _cmdline: *const u16,
+    _show: i32,
+) {
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::TextServices::{
+        ITfInputProcessorProfiles, CLSID_TF_InputProcessorProfiles,
+    };
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let profiles: Result<ITfInputProcessorProfiles> = CoCreateInstance(
+            &CLSID_TF_InputProcessorProfiles,
+            None,
+            CLSCTX_INPROC_SERVER,
+        );
+        if let Ok(profiles) = profiles {
+            // 先补齐语言档案（若 install.ps1 的注册表项缺失也能建出）
+            let mut desc: Vec<u16> = "Convallaria Input".encode_utf16().collect();
+            desc.push(0);
+            let _ = profiles.AddLanguageProfile(
+                &TIP_CLSID,
+                LANGID_ZH_CN,
+                &PROFILE_GUID,
+                &desc,
+                &[],
+                0,
+            );
+            let _ = profiles.EnableLanguageProfile(
+                &TIP_CLSID,
+                LANGID_ZH_CN,
+                &PROFILE_GUID,
+                true,
+            );
+        }
+        windows::Win32::System::Com::CoUninitialize();
+    }
 }
 
 fn current_dll_path() -> Result<std::path::PathBuf> {

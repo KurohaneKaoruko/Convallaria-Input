@@ -1,5 +1,10 @@
 # Convallaria Input 卸载脚本（任务 5.1）
-#Requires -RunAsAdministrator
+# 卸载脚本：自动弹出 UAC 提权
+$identity = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+if (-not $identity.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    exit
+}
 
 $ErrorActionPreference = "Continue"
 

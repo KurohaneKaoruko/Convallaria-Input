@@ -1,9 +1,16 @@
 # Convallaria Input 安装脚本（任务 5.1）
-# 需要管理员权限：写入 HKLM 注册表并注册 TSF 文本服务。
-#Requires -RunAsAdministrator
-
+# 双击或普通 PowerShell 运行即可：自动弹出 UAC 提权，注册后自动启用语言配置，
+# 无需手动到系统设置里添加键盘。
 $ErrorActionPreference = "Stop"
-# 脚本位于 platforms\windows\ 下；工作区根目录为其上两级
+
+# —— 自提升：非管理员时以管理员身份重启自身 ——
+$identity = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+if (-not $identity.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    exit
+}
+
+# —— 工作区根目录（脚本位于 platforms\windows\ 下）——
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 
 # 1) 构建 DLL（workspace 共享根 target\）
@@ -15,7 +22,7 @@ Pop-Location
 $dll = Join-Path $root "target\release\convallaria_windows.dll"
 if (-not (Test-Path $dll)) { throw "未找到 DLL: $dll" }
 
-# 1.5) 部署词典到用户配置目录（引擎加载路径之一）
+# 2) 部署词典到用户配置目录（引擎加载路径之一）
 $dict = Join-Path $root "assets\dicts\convallaria.dict.bin"
 if (Test-Path $dict) {
     $dest = Join-Path $env:APPDATA "Convallaria"
@@ -26,11 +33,12 @@ if (Test-Path $dict) {
     Write-Warning "未找到词典 $dict —— 请先执行 dict build（见 README），输入法将退化为纯原文上屏"
 }
 
-# 2) COM 自注册（DllRegisterServer 为占位，注册表由本脚本写入）
+# 3) COM 自注册
 & regsvr32 /s $dll
-if ($LASTEXITCODE -ne 0) { throw "regsvr32 注册失败（检查管理员权限）" }
+if ($LASTEXITCODE -ne 0) { throw "regsvr32 注册失败" }
+Write-Host "✔ 文本服务已注册"
 
-# 3) TSF 文本服务注册表项
+# 4) TSF 注册表项（CLSID / InprocServer32 / CTF\TIP / 类别）
 $clsid   = "{8A5C7B60-4C2A-4E1F-9D3B-5C0A11B2C001}"
 $profile = "{8A5C7B60-4C2A-4E1F-9D3B-5C0A11B2C002}"
 # GUID_TFCAT_TIP_KEYBOARD（TSF 官方类别常量）
@@ -51,6 +59,10 @@ Set-ItemProperty -Path $langProfile -Name "(default)" -Value "Convallaria"
 Set-ItemProperty -Path $langProfile -Name "Enable" -Value 1 -Type DWord
 
 New-Item -Path "HKLM:\SOFTWARE\Microsoft\CTF\TIP\$clsid\Category\$catKeyboard\$clsid" -Force | Out-Null
+Write-Host "✔ 注册表项已写入"
 
-Write-Host "✔ Convallaria Input 已注册。请在 Windows 设置 > 时间和语言 > 语言 > 中文 > 选项 > 键盘中添加「Convallaria Input」，或在语言栏选择。"
-Write-Host "  （MVP 骨架仅演示吃键与上屏原文链路，组字/候选窗在后续任务交付）"
+# 5) 为当前用户启用语言配置（免去手动到设置里添加键盘）
+& rundll32.exe "$dll,EnableProfileForCurrentUser"
+Write-Host ""
+Write-Host "✔ Convallaria Input 安装完成！按 Win+空格 或点击任务栏语言「中」图标即可切换。"
+Write-Host "  卸载：platforms\windows\uninstall.ps1"

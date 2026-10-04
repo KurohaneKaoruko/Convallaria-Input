@@ -3,6 +3,9 @@
 //! - 位置锚定组字矩形下方，避免遮挡组字串
 //! - WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW：不抢焦点、不出现在任务栏
 //! - 绘制数据直接读取线程上下文快照（同线程消息循环由宿主应用驱动）
+//!
+//! **借用规则**：函数不访问 `state`（避免 RefCell 重入），句柄由调用方
+//! 通过 `&mut isize` 传入并在创建后写回。
 
 // 本模块所有函数都在窗口过程 / FFI 上下文中执行，unsafe 块显式标注到调用点级
 // 会淹没可读性；此处整体豁免 unsafe_op_in_unsafe_fn。
@@ -10,20 +13,19 @@
 
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, FONT_CHARSET,
-    FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY, FillRect, HDC, HFONT, InvalidateRect,
-    PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor, TRANSPARENT, TextOutW,
+    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, FillRect, InvalidateRect,
+    SelectObject, SetBkMode, SetTextColor, TextOutW, FONT_CHARSET, FONT_CLIP_PRECISION,
+    FONT_OUTPUT_PRECISION, FONT_QUALITY, HDC, HFONT, PAINTSTRUCT, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, HMENU, HWND_TOPMOST,
-    RegisterClassW, SW_HIDE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetWindowPos,
-    ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_PAINT, WNDCLASSW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW, SetWindowPos, ShowWindow,
+    CS_HREDRAW, CS_VREDRAW, HMENU, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_SHOWWINDOW, SW_HIDE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_PAINT, WNDCLASSW,
 };
-use windows_core::{PCWSTR, w};
+use windows_core::{w, PCWSTR};
 
-use crate::state;
 const CLASS_NAME: PCWSTR = w!("ConvallariaCandidateWnd");
 const BORDER: i32 = 8;
 
@@ -43,53 +45,49 @@ fn hwnd_from_isize(h: isize) -> HWND {
     HWND(h as *mut core::ffi::c_void)
 }
 
-/// 确保候选窗已创建，返回句柄。
-pub fn ensure_window() -> isize {
-    state::with(|t| {
-        if t.hwnd != 0 {
-            return t.hwnd;
-        }
-        unsafe {
-            let hmodule = GetModuleHandleW(PCWSTR::null()).unwrap_or_default();
-            let wc = WNDCLASSW {
-                style: CS_HREDRAW | CS_VREDRAW,
-                lpfnWndProc: Some(wnd_proc),
-                hInstance: hmodule.into(),
-                lpszClassName: CLASS_NAME,
-                hbrBackground: CreateSolidBrush(COLORREF(0x00FF_FFFF)),
-                ..Default::default()
-            };
-            RegisterClassW(&wc);
-            let hwnd = CreateWindowExW(
-                WINDOW_EX_STYLE(
-                    windows::Win32::UI::WindowsAndMessaging::WS_EX_TOPMOST.0
-                        | windows::Win32::UI::WindowsAndMessaging::WS_EX_TOOLWINDOW.0
-                        | windows::Win32::UI::WindowsAndMessaging::WS_EX_NOACTIVATE.0,
-                ),
-                CLASS_NAME,
-                w!("Convallaria 候选"),
-                WINDOW_STYLE(windows::Win32::UI::WindowsAndMessaging::WS_POPUP.0),
-                0,
-                0,
-                240,
-                200,
-                None,
-                Some(HMENU::default()),
-                Some(HINSTANCE(hmodule.0)),
-                None,
-            )
-            .unwrap_or_default();
-            t.hwnd = hwnd.0 as isize;
-            t.hwnd
-        }
-    })
-    .unwrap_or(0)
+/// 确保候选窗已创建（句柄写回 `hwnd`）。
+pub fn ensure(hwnd: &mut isize) {
+    if *hwnd != 0 {
+        return;
+    }
+    unsafe {
+        let hmodule = GetModuleHandleW(PCWSTR::null()).unwrap_or_default();
+        let wc = WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(wnd_proc),
+            hInstance: hmodule.into(),
+            lpszClassName: CLASS_NAME,
+            hbrBackground: CreateSolidBrush(COLORREF(0x00FF_FFFF)),
+            ..Default::default()
+        };
+        RegisterClassW(&wc);
+        let created = CreateWindowExW(
+            WINDOW_EX_STYLE(
+                windows::Win32::UI::WindowsAndMessaging::WS_EX_TOPMOST.0
+                    | windows::Win32::UI::WindowsAndMessaging::WS_EX_TOOLWINDOW.0
+                    | windows::Win32::UI::WindowsAndMessaging::WS_EX_NOACTIVATE.0,
+            ),
+            CLASS_NAME,
+            w!("Convallaria 候选"),
+            WINDOW_STYLE(windows::Win32::UI::WindowsAndMessaging::WS_POPUP.0),
+            0,
+            0,
+            240,
+            200,
+            None,
+            Some(HMENU::default()),
+            Some(HINSTANCE(hmodule.0)),
+            None,
+        )
+        .unwrap_or_default();
+        *hwnd = created.0 as isize;
+    }
 }
 
 /// 显示候选：锚定组字矩形下方。
-pub fn show(items: Vec<(usize, String)>, footer: String, anchor: Option<RECT>) {
-    let hwnd = ensure_window();
-    if hwnd == 0 {
+pub fn show(hwnd: &mut isize, items: Vec<(usize, String)>, footer: String, anchor: Option<RECT>) {
+    ensure(hwnd);
+    if *hwnd == 0 {
         return;
     }
     PAINT_DATA.with(|d| *d.borrow_mut() = Snapshot { items, footer });
@@ -110,7 +108,7 @@ pub fn show(items: Vec<(usize, String)>, footer: String, anchor: Option<RECT>) {
             SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE
         };
         let _ = SetWindowPos(
-            hwnd_from_isize(hwnd),
+            hwnd_from_isize(*hwnd),
             Some(HWND_TOPMOST),
             x,
             y,
@@ -120,7 +118,7 @@ pub fn show(items: Vec<(usize, String)>, footer: String, anchor: Option<RECT>) {
         );
     }
     unsafe {
-        let _ = InvalidateRect(Some(hwnd_from_isize(hwnd)), None, true);
+        let _ = InvalidateRect(Some(hwnd_from_isize(*hwnd)), None, true);
     }
 }
 
