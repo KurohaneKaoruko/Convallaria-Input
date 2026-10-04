@@ -1,41 +1,36 @@
 //! 键盘事件池：按键状态机（组字 / 选词 / 翻页 / 中英切换 / 模式热键）。
 //!
-//! **借用规则**：每个回调只做一次 `state::with`；`handle_key` / `refresh`
-//! 通过 `&mut ThreadCtx` 操作状态，绝不再进入 `state::with`。
-//! 需要同时访问引擎与组字状态时，先在作用域内取出所有权值、结束借用后再调用
-//! 组字会话（composition::* 均需 `&mut ThreadCtx`）。
-//! 所有回调以 `state::catch` 包裹——panic 不允许穿越 COM 边界带走宿主应用。
+//! **职责划分**：本模块只做「按键 → 引擎状态 + 待落定内容」的翻译，
+//! 写文档交给异步编辑会话（`edit`）；每个回调只做一次引擎访问
+//!（`state::with_engine`），并以 `state::catch` 拦截 panic。
+
+use std::rc::Rc;
 
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
 use windows::Win32::UI::TextServices::{ITfContext, ITfKeyEventSink, ITfKeyEventSink_Impl};
 use windows_core::{implement, BOOL, Result};
 
-use crate::{candidate_window, composition, state};
+use crate::engine::Engine;
+use crate::session::Session;
+use crate::{candidate_window, edit, state};
 use ime_core::mode::InputMode;
 
 #[implement(ITfKeyEventSink)]
-pub struct KeySink;
-
-impl KeySink {
-    pub fn new() -> Self {
-        Self
-    }
+pub struct KeySink {
+    session: Rc<Session>,
 }
 
-impl Default for KeySink {
-    fn default() -> Self {
-        Self::new()
+impl KeySink {
+    pub fn new(session: Rc<Session>) -> Self {
+        Self { session }
     }
 }
 
 impl ITfKeyEventSink_Impl for KeySink_Impl {
     fn OnSetFocus(&self, _foreground: BOOL) -> Result<()> {
         state::catch(|| {
-            state::with(|t| {
-                t.shift_down = false;
-                t.shift_tainted = false;
-            });
+            self.session.english.set(false);
         });
         Ok(())
     }
@@ -47,7 +42,9 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
         _lparam: LPARAM,
     ) -> Result<BOOL> {
         let vk = (wparam.0 & 0xFF) as u32;
-        let want = state::catch(|| state::with(|t| wants_key(t, vk)).unwrap_or(false));
+        let want = state::catch(|| {
+            state::with_engine(|engine| wants_key(&self.session, engine, vk)).unwrap_or(false)
+        });
         Ok(BOOL::from(want))
     }
 
@@ -71,12 +68,19 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
                 return false;
             };
             let vk = (wparam.0 & 0xFF) as u32;
-            state::with(|t| {
-                t.context = Some(context.clone());
-                let _ = composition::store_active_view(t, &context);
-                handle_key(t, &context, vk)
+            self.session.cache_active_view(&context);
+            self.session.cache_context(&context);
+            let handled = state::with_engine(|engine| {
+                handle_key(&self.session, engine, &context, vk)
             })
-            .unwrap_or(false)
+            .unwrap_or(false);
+            // 有待落定内容（组字串或上屏文本）就请求异步编辑会话
+            let pending = self.session.pending_commit.borrow().is_some()
+                || !self.session.pending_preedit.borrow().is_empty();
+            if pending {
+                let _ = edit::request_update(&self.session, &context);
+            }
+            handled
         });
         Ok(BOOL::from(handled))
     }
@@ -91,19 +95,16 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
         if vk == 0x10 {
             // 单击 Shift：按下期间无其他按键 → 中英切换
             state::catch(|| {
-                let toggle = state::with(|t| {
-                    let was_down = t.shift_down;
-                    let tainted = t.shift_tainted;
-                    t.shift_down = false;
-                    t.shift_tainted = false;
+                let toggle = {
+                    let was_down = self.session.shift_down.get();
+                    let tainted = self.session.shift_tainted.get();
+                    self.session.shift_down.set(false);
+                    self.session.shift_tainted.set(false);
                     was_down && !tainted
-                })
-                .unwrap_or(false);
+                };
                 if toggle {
-                    state::with(|t| {
-                        t.english = !t.english;
-                        refresh(t);
-                    });
+                    self.session.english.set(!self.session.english.get());
+                    state::with_engine(|engine| refresh(&self.session, engine));
                 }
             });
         }
@@ -120,58 +121,46 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
 }
 
 /// 该键是否打算吃掉（OnTestKeyDown 用）。
-fn wants_key(t: &mut state::ThreadCtx, vk: u32) -> bool {
-    // Ctrl+` 任何时候都吃
+fn wants_key(session: &Session, engine: &mut Engine, vk: u32) -> bool {
     if vk == 0xC0 && ctrl_down() {
         return true;
     }
-    if t.english {
+    if session.english.get() {
         return false;
     }
-    let Some(engine) = t.engine.as_ref() else {
-        return false;
-    };
     match vk {
-        // 字母
         0x41..=0x5A => true,
-        // 退格 / 数字 / 空格 / 回车 / Esc / 翻页：仅在组字中
         0x08 | 0x31..=0x39 | 0x20 | 0x0D | 0x1B | 0xBD | 0xBB => !engine.is_empty(),
         _ => false,
     }
 }
 
-fn handle_key(t: &mut state::ThreadCtx, context: &ITfContext, vk: u32) -> bool {
-    // Shift 按下状态跟踪（单击判定）
+fn handle_key(
+    session: &Session,
+    engine: &mut Engine,
+    _context: &ITfContext,
+    vk: u32,
+) -> bool {
     if vk == 0x10 {
-        t.shift_down = true;
-        t.shift_tainted = false;
+        session.shift_down.set(true);
+        session.shift_tainted.set(false);
         return false; // 不吃 Shift 本身
     }
-    if t.shift_down {
-        t.shift_tainted = true;
+    if session.shift_down.get() {
+        session.shift_tainted.set(true);
     }
 
-    // Ctrl+` 循环切换输入模式（规格：全拼 → 双拼 → 五笔，模式可见）
+    // Ctrl+` 循环切换输入模式（模式名在候选窗页脚显示）
     if vk == 0xC0 && ctrl_down() {
-        let (mode, page, total) = match t.engine.as_mut() {
-            Some(engine) => {
-                let mode = engine.cycle_mode();
-                let (_, page, total) = engine.page_items();
-                (mode, page, total)
-            }
-            None => (InputMode::Quanpin, 0, 1),
-        };
-        let footer = footer(mode, page, total, t.english);
-        let anchor = t.composition_rect();
-        candidate_window::show(&mut t.hwnd, Vec::new(), footer, anchor);
+        let mode = engine.cycle_mode();
+        let (_, page, total) = engine.page_items();
+        let footer = footer(mode, page, total, session.english.get());
+        let anchor = session.composition_rect();
+        candidate_window::show(&session.hwnd, Vec::new(), footer, anchor);
         return true;
     }
 
-    // 英文直通
-    if t.english {
-        return false;
-    }
-    if t.engine.is_none() {
+    if session.english.get() {
         return false;
     }
 
@@ -179,30 +168,18 @@ fn handle_key(t: &mut state::ThreadCtx, context: &ITfContext, vk: u32) -> bool {
         // 字母 → 组字
         0x41..=0x5A => {
             let ch = (b'a' + (vk - 0x41) as u8) as char;
-            let raw = {
-                let engine = t.engine.as_mut().expect("engine 已判空");
-                engine.push(ch);
-                engine.raw.clone()
-            };
-            let _ = composition::ensure_started(t, context);
-            let _ = composition::update_text(t, context, &raw);
-            refresh(t);
+            engine.push(ch);
+            *session.pending_preedit.borrow_mut() = engine.raw.clone();
+            refresh(session, engine);
             true
         }
         // 数字 1-9 → 选词
         0x31..=0x39 => {
             let pick = (vk - 0x31) as usize;
-            let picked = {
-                let engine = t.engine.as_mut().expect("engine 已判空");
-                engine
-                    .page_items()
-                    .0
-                    .get(pick)
-                    .map(|(text, _)| text.clone())
-            };
-            match picked {
+            match engine.page_items().0.get(pick).map(|(text, _)| text.clone()) {
                 Some(text) => {
-                    let _ = composition::commit(t, context, &text);
+                    *session.pending_commit.borrow_mut() = Some(text);
+                    *session.pending_preedit.borrow_mut() = String::new();
                     true
                 }
                 None => false,
@@ -210,77 +187,59 @@ fn handle_key(t: &mut state::ThreadCtx, context: &ITfContext, vk: u32) -> bool {
         }
         // 空格 → 首选上屏
         0x20 => {
-            let first = {
-                let engine = t.engine.as_mut().expect("engine 已判空");
-                engine
-                    .page_items()
-                    .0
-                    .first()
-                    .map(|(text, _)| text.clone())
-                    .unwrap_or_else(|| engine.raw.clone())
-            };
-            let _ = composition::commit(t, context, &first);
+            let first = engine
+                .page_items()
+                .0
+                .first()
+                .map(|(text, _)| text.clone())
+                .unwrap_or_else(|| engine.raw.clone());
+            *session.pending_commit.borrow_mut() = Some(first);
+            *session.pending_preedit.borrow_mut() = String::new();
             true
         }
         // 回车 → 上屏原文
         0x0D => {
-            let raw = {
-                let engine = t.engine.as_mut().expect("engine 已判空");
-                engine.raw.clone()
-            };
-            let _ = composition::commit(t, context, &raw);
+            *session.pending_commit.borrow_mut() = Some(engine.raw.clone());
+            *session.pending_preedit.borrow_mut() = String::new();
             true
         }
         // Esc → 清空
         0x1B => {
-            if let Some(engine) = t.engine.as_mut() {
-                engine.clear();
-            }
-            let _ = composition::commit(t, context, "");
-            candidate_window::hide(t.hwnd);
+            engine.clear();
+            *session.pending_preedit.borrow_mut() = String::new();
+            candidate_window::hide(session.hwnd.get());
             true
         }
         // 退格
         0x08 => {
-            let now_empty = {
-                let engine = t.engine.as_mut().expect("engine 已判空");
-                engine.backspace();
-                let empty = engine.is_empty();
-                let raw = engine.raw.clone();
-                (empty, raw)
-            };
-            if now_empty.0 {
-                let _ = composition::commit(t, context, "");
-                candidate_window::hide(t.hwnd);
+            engine.backspace();
+            if engine.is_empty() {
+                *session.pending_preedit.borrow_mut() = String::new();
+                candidate_window::hide(session.hwnd.get());
             } else {
-                let _ = composition::update_text(t, context, &now_empty.1);
-                refresh(t);
+                *session.pending_preedit.borrow_mut() = engine.raw.clone();
+                refresh(session, engine);
             }
             true
         }
         // 翻页：`-` 上一页、`=` 下一页
         0xBD | 0xBB => {
-            if let Some(engine) = t.engine.as_mut() {
-                if vk == 0xBB {
-                    engine.page += 1;
-                } else {
-                    engine.page = engine.page.saturating_sub(1);
-                }
+            if vk == 0xBB {
+                engine.page += 1;
+            } else {
+                engine.page = engine.page.saturating_sub(1);
             }
-            refresh(t);
+            refresh(session, engine);
             true
         }
         _ => false,
     }
 }
 
-/// 组字串与候选窗刷新。
-fn refresh(t: &mut state::ThreadCtx) {
-    let Some(engine) = t.engine.as_ref() else {
-        return;
-    };
+/// 候选窗刷新（按键路径与编辑会话回调共用）。
+pub fn refresh(session: &Session, engine: &mut Engine) {
     if engine.is_empty() {
-        candidate_window::hide(t.hwnd);
+        candidate_window::hide(session.hwnd.get());
         return;
     }
     let (items, page, total) = engine.page_items();
@@ -290,10 +249,14 @@ fn refresh(t: &mut state::ThreadCtx) {
         .enumerate()
         .map(|(i, (text, _))| (i + 1, text.clone()))
         .collect();
-    let footer = footer(mode, page, total, t.english);
-    let anchor = t.composition_rect();
-    candidate_window::show(&mut t.hwnd, display, footer, anchor);
-    // 组字串文本已在 OnKeyDown 中更新
+    let footer = footer(mode, page, total, session.english.get());
+    let anchor = session.composition_rect();
+    candidate_window::show(&session.hwnd, display, footer, anchor);
+}
+
+/// 编辑会话写入完成后重新定位候选窗（此时组字矩形才是最新位置）。
+pub fn reposition_candidates(session: &Session) {
+    state::with_engine(|engine| refresh(session, engine));
 }
 
 fn footer(mode: InputMode, page: usize, total: usize, english: bool) -> String {

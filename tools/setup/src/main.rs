@@ -39,7 +39,6 @@ const DICTIONARY: &[u8] = include_bytes!("../../../assets/dicts/convallaria.dict
 
 const TIP_CLSID: &str = "{8A5C7B60-4C2A-4E1F-9D3B-5C0A11B2C001}";
 const PROFILE_GUID: &str = "{8A5C7B60-4C2A-4E1F-9D3B-5C0A11B2C002}";
-const CAT_KEYBOARD: &str = "{34745CFF-BF55-4F84-9AD5-5B36CE96EF02}";
 const LANGID_ZH_CN: u16 = 0x0804;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -105,6 +104,14 @@ fn main() {
     }
 }
 
+/// 注销 TIP 相关注册表树（清理旧手写版本残留）。
+fn unregister_tip() {
+    unsafe {
+        let _ = reg_delete_tree(HKEY_LOCAL_MACHINE, &wide(&format!("SOFTWARE\\Microsoft\\CTF\\TIP\\{TIP_CLSID}")));
+        let _ = reg_delete_tree(HKEY_LOCAL_MACHINE, &wide(&format!("SOFTWARE\\Classes\\CLSID\\{TIP_CLSID}")));
+    }
+}
+
 // —— 安装 ——
 
 fn install_all() -> i32 {
@@ -163,33 +170,41 @@ fn install_all() -> i32 {
         let _ = std::fs::write(dest.join("dictionary.bin"), DICTIONARY);
     }
 
-    // 3) 注册表：CLSID / InprocServer32
-    set_reg_str(
-        &format!("SOFTWARE\\Classes\\CLSID\\{TIP_CLSID}"),
-        "",
-        "Convallaria Input",
-    );
-    set_reg_str(
-        &format!("SOFTWARE\\Classes\\CLSID\\{TIP_CLSID}\\InprocServer32"),
-        "",
-        &dll_path.to_string_lossy(),
-    );
-    set_reg_str(
-        &format!("SOFTWARE\\Classes\\CLSID\\{TIP_CLSID}\\InprocServer32"),
-        "ThreadingModel",
-        "Apartment",
-    );
-
-    // 4) 注册表：CTF\TIP 与语言档案、键盘类别
-    set_reg_str(&format!("SOFTWARE\\Microsoft\\CTF\\TIP\\{TIP_CLSID}"), "", "Convallaria Input");
-    let lang_profile = format!("SOFTWARE\\Microsoft\\CTF\\TIP\\{TIP_CLSID}\\LanguageProfile\\{LANGID_ZH_CN:#06x}\\{PROFILE_GUID}");
-    set_reg_str(&lang_profile, "", "Convallaria");
-    set_reg_dword(&lang_profile, "Enable", 1);
-    set_reg_str(
-        &format!("SOFTWARE\\Microsoft\\CTF\\TIP\\{TIP_CLSID}\\Category\\{CAT_KEYBOARD}\\{TIP_CLSID}"),
-        "",
-        "",
-    );
+    // 3) 注册文本服务：调用 DLL 的 DllRegisterServer（InprocServer32 + TSF
+    //    Profile + 全部键盘/环境类别，注册逻辑只维护这一份）
+    unsafe {
+        let lib = windows::Win32::System::LibraryLoader::LoadLibraryW(PCWSTR(wide(&dll_path.to_string_lossy()).as_ptr()))
+            .unwrap_or_default();
+        if lib.is_invalid() {
+            rm::restart_and_end(rm_session);
+            msg_box("加载输入法 DLL 失败。", MB_OK | MB_ICONERROR);
+            return 1;
+        }
+        let proc_addr = windows::Win32::System::LibraryLoader::GetProcAddress(
+            lib,
+            windows_core::s!("DllRegisterServer"),
+        );
+        match proc_addr {
+            Some(f) => {
+                let register: unsafe extern "system" fn() -> windows_core::HRESULT =
+                    std::mem::transmute(f);
+                if register().is_err() {
+                    let _ = windows::Win32::Foundation::FreeLibrary(lib);
+                    rm::restart_and_end(rm_session);
+                    msg_box("文本服务注册失败（DllRegisterServer）。", MB_OK | MB_ICONERROR);
+                    return 1;
+                }
+            }
+            None => {
+                let _ = windows::Win32::Foundation::FreeLibrary(lib);
+                rm::restart_and_end(rm_session);
+                msg_box("DLL 缺少 DllRegisterServer 导出。", MB_OK | MB_ICONERROR);
+                return 1;
+            }
+        }
+        let _ = windows::Win32::Foundation::FreeLibrary(lib);
+    }
+    println!("✔ 文本服务已注册");
 
     // 5) 为当前用户启用语言配置（出现在 Win+空格 列表中；不改变当前激活的输入法）
     enable_profile_for_current_user();
@@ -214,7 +229,10 @@ fn install_all() -> i32 {
 // —— 卸载 ——
 
 fn uninstall_all() -> i32 {
-    unregister_tip();
+    // 安装目录里的 DLL 路径（注销与文件删除都要用）
+    let dll_path = std::env::var_os("ProgramFiles")
+        .map(PathBuf::from)
+        .map(|pf| pf.join("Convallaria Input").join("convallaria_windows.dll"));
 
     // 移除语言配置（对当前用户）
     disable_profile_for_current_user();
@@ -228,14 +246,28 @@ fn uninstall_all() -> i32 {
     }
 
     // 删除文件：先用重启管理器关闭占用输入法的应用
-    let dll_path = std::env::var_os("ProgramFiles")
-        .map(PathBuf::from)
-        .map(|pf| pf.join("Convallaria Input").join("convallaria_windows.dll"));
     let (rm_session, _) = dll_path
         .as_deref()
         .map(|p| p.to_string_lossy().into_owned())
         .map(|ref p| rm::shutdown_locking_apps(p))
         .unwrap_or((0, Vec::new()));
+
+    // 文本服务注销（Profile / 类别 / CLSID 一次清掉）
+    if let Some(dll) = dll_path.as_deref() {
+        unsafe {
+            if let Ok(lib) = windows::Win32::System::LibraryLoader::LoadLibraryW(PCWSTR(wide(&dll.to_string_lossy()).as_ptr())) {
+                if let Some(f) = windows::Win32::System::LibraryLoader::GetProcAddress(
+                    lib,
+                    windows_core::s!("DllUnregisterServer"),
+                ) {
+                    let unregister: unsafe extern "system" fn() -> windows_core::HRESULT =
+                        std::mem::transmute(f);
+                    let _ = unregister();
+                }
+                let _ = windows::Win32::Foundation::FreeLibrary(lib);
+            }
+        }
+    }
 
     if let Some(program_files) = std::env::var_os("ProgramFiles").map(PathBuf::from) {
         let dir = program_files.join("Convallaria Input");
@@ -248,15 +280,6 @@ fn uninstall_all() -> i32 {
     }
     rm::restart_and_end(rm_session);
     0
-}
-
-/// 注销 TIP 相关注册表树。
-fn unregister_tip() {
-    unsafe {
-        let _ = reg_delete_tree(HKEY_LOCAL_MACHINE, &wide(&format!("SOFTWARE\\Microsoft\\CTF\\TIP\\{TIP_CLSID}")));
-        let _ = reg_delete_tree(HKEY_LOCAL_MACHINE, &wide(&format!("SOFTWARE\\Classes\\CLSID\\{TIP_CLSID}")));
-        let _ = reg_delete_tree(HKEY_LOCAL_MACHINE, &wide(&format!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{TIP_CLSID}")));
-    }
 }
 
 // —— TSF 语言配置 ——

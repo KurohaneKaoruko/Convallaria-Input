@@ -46,8 +46,8 @@ fn hwnd_from_isize(h: isize) -> HWND {
 }
 
 /// 确保候选窗已创建（句柄写回 `hwnd`）。
-pub fn ensure(hwnd: &mut isize) {
-    if *hwnd != 0 {
+pub fn ensure(hwnd: &std::cell::Cell<isize>) {
+    if hwnd.get() != 0 {
         return;
     }
     unsafe {
@@ -80,14 +80,14 @@ pub fn ensure(hwnd: &mut isize) {
             None,
         )
         .unwrap_or_default();
-        *hwnd = created.0 as isize;
+        hwnd.set(created.0 as isize);
     }
 }
 
 /// 显示候选：锚定组字矩形下方。
-pub fn show(hwnd: &mut isize, items: Vec<(usize, String)>, footer: String, anchor: Option<RECT>) {
+pub fn show(hwnd: &std::cell::Cell<isize>, items: Vec<(usize, String)>, footer: String, anchor: Option<RECT>) {
     ensure(hwnd);
-    if *hwnd == 0 {
+    if hwnd.get() == 0 {
         return;
     }
     PAINT_DATA.with(|d| *d.borrow_mut() = Snapshot { items, footer });
@@ -108,7 +108,7 @@ pub fn show(hwnd: &mut isize, items: Vec<(usize, String)>, footer: String, ancho
             SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE
         };
         let _ = SetWindowPos(
-            hwnd_from_isize(*hwnd),
+            hwnd_from_isize(hwnd.get()),
             Some(HWND_TOPMOST),
             x,
             y,
@@ -118,7 +118,7 @@ pub fn show(hwnd: &mut isize, items: Vec<(usize, String)>, footer: String, ancho
         );
     }
     unsafe {
-        let _ = InvalidateRect(Some(hwnd_from_isize(*hwnd)), None, true);
+        let _ = InvalidateRect(Some(hwnd_from_isize(hwnd.get())), None, true);
     }
 }
 
