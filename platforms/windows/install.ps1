@@ -3,9 +3,10 @@
 #Requires -RunAsAdministrator
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+# 脚本位于 platforms\windows\ 下；工作区根目录为其上两级
+$root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 
-# 1) 构建 DLL
+# 1) 构建 DLL（workspace 共享根 target\）
 Push-Location $root
 cargo build --release -p convallaria-windows
 if ($LASTEXITCODE -ne 0) { throw "构建失败" }

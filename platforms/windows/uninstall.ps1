@@ -6,7 +6,7 @@ $ErrorActionPreference = "Continue"
 $clsid   = "{8A5C7B60-4C2A-4E1F-9D3B-5C0A11B2C001}"
 $profile = "{8A5C7B60-4C2A-4E1F-9D3B-5C0A11B2C002}"
 
-$dll = Join-Path $PSScriptRoot "..\target\release\convallaria_windows.dll"
+$dll = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\..\target\release\convallaria_windows.dll"))
 if (Test-Path $dll) {
     & regsvr32 /u /s $dll
 }
