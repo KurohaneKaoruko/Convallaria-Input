@@ -113,13 +113,16 @@ fn install_all() -> i32 {
     unregister_tip();
     log("旧版本清理完成");
 
-    // 1) 安装目录：%ProgramFiles%\Convallaria Input
+    // 1) 安装目录（版本化）：%ProgramFiles%\Convallaria Input\<版本>\
+    //    每次安装进新目录、注册表指向新目录，绕开「旧 DLL 被系统加载导致无法覆盖」
+    //    的文件锁；旧版本目录在安装末尾异步清理。
     let Some(program_files) = std::env::var_os("ProgramFiles").map(PathBuf::from) else {
         log("失败：无 ProgramFiles 环境变量");
         msg_box("安装失败：未找到 ProgramFiles 环境变量。", MB_OK | MB_ICONERROR);
         return 1;
     };
-    let install_dir = program_files.join("Convallaria Input");
+    let base_dir = program_files.join("Convallaria Input");
+    let install_dir = base_dir.join(VERSION);
     if let Err(e) = std::fs::create_dir_all(&install_dir) {
         log(&format!("失败：创建目录 {:?}: {e}", install_dir));
         msg_box(&format!("安装失败：无法创建目录 {}\n{e}", install_dir.display()), MB_OK | MB_ICONERROR);
@@ -130,10 +133,25 @@ fn install_all() -> i32 {
     let dll_path = install_dir.join("convallaria_windows.dll");
     let dict_path = install_dir.join("dictionary.bin");
 
-    // 2.5) 重启管理器：自动关闭占用输入法 DLL 的应用（完成后自动恢复）
+    // 2.5) 重启管理器：礼貌关闭正在使用旧版本 DLL 的应用（完成后自动恢复）。
+    //      新版本写入新目录，不存在文件锁；此步只为让旧输入法尽快退出内存。
+    let old_dll = base_dir.join("convallaria_windows.dll");
     let rm_session = {
         log("重启管理器：检测占用…");
-        let (session, locked_by) = rm::shutdown_locking_apps(&dll_path.to_string_lossy());
+        // 收集所有现存版本的 DLL 路径（旧扁平布局 + 各版本子目录）
+        let mut targets: Vec<String> = Vec::new();
+        if old_dll.exists() {
+            targets.push(old_dll.to_string_lossy().into_owned());
+        }
+        if let Ok(entries) = std::fs::read_dir(&base_dir) {
+            for entry in entries.flatten() {
+                let candidate = entry.path().join("convallaria_windows.dll");
+                if candidate.exists() {
+                    targets.push(candidate.to_string_lossy().into_owned());
+                }
+            }
+        }
+        let (session, locked_by) = rm::shutdown_locking_apps(&targets);
         log(&format!("重启管理器：占用应用 {} 个", locked_by.len()));
         if !locked_by.is_empty() {
             let list = locked_by.join("、");
@@ -157,7 +175,7 @@ fn install_all() -> i32 {
         rm::restart_and_end(rm_session);
         log(&format!("失败：写 DLL: {e}"));
         msg_box(
-            &format!("安装失败：写入 DLL 失败\n{e}\n\n请关闭相关应用后重试，或重启电脑后再安装。"),
+            &format!("安装失败：写入 DLL 失败\n{e}"),
             MB_OK | MB_ICONERROR,
         );
         return 1;
@@ -264,6 +282,25 @@ fn install_all() -> i32 {
             MB_OK | MB_ICONINFORMATION,
         );
     }
+    // 7) 清理旧版本目录（旧 DLL 可能仍被已运行的应用加载——尽力删除，失败忽略，
+    //    不影响本次安装；这些目录会在下次升级时再被清理）
+    let mut removed_old = false;
+    if let Ok(entries) = std::fs::read_dir(&base_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir()
+                && p != install_dir
+                && std::fs::remove_dir_all(&p).is_ok()
+            {
+                removed_old = true;
+            }
+            // 旧式扁平布局的残留文件（早期版本直接放在根目录）
+            if p.is_file() {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+    }
+    log(&format!("旧版本清理: {}", if removed_old { "已删除" } else { "无或被占用（稍后自动清理）" }));
     log("== 安装完成 ==");
     0
 }
@@ -289,12 +326,22 @@ fn uninstall_all() -> i32 {
         );
     }
 
-    // 删除文件：先用重启管理器关闭占用输入法的应用
-    let (rm_session, _) = dll_path
-        .as_deref()
-        .map(|p| p.to_string_lossy().into_owned())
-        .map(|ref p| rm::shutdown_locking_apps(p))
-        .unwrap_or((0, Vec::new()));
+    // 删除文件：先用重启管理器关闭占用输入法的应用（含所有版本的 DLL）
+    let mut targets: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(
+        std::env::var_os("ProgramFiles")
+            .map(PathBuf::from)
+            .unwrap_or_default()
+            .join("Convallaria Input"),
+    ) {
+        for entry in entries.flatten() {
+            let candidate = entry.path().join("convallaria_windows.dll");
+            if candidate.exists() {
+                targets.push(candidate.to_string_lossy().into_owned());
+            }
+        }
+    }
+    let (rm_session, _) = rm::shutdown_locking_apps(&targets);
 
     // 文本服务注销（Profile / 类别 / CLSID 一次清掉）
     if let Some(dll) = dll_path.as_deref() {
@@ -472,9 +519,9 @@ mod rm {
         s.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
-    /// 关闭正在占用 `path` 的应用。返回 (会话句柄, 被关闭的应用名列表)；
+    /// 关闭正在占用 `paths` 中任一文件的应用。返回 (会话句柄, 被关闭的应用名列表)；
     /// 会话句柄非零时调用方须在完成后执行 [`super::rm::restart_and_end`]。
-    pub fn shutdown_locking_apps(path: &str) -> (u32, Vec<String>) {
+    pub fn shutdown_locking_apps(paths: &[String]) -> (u32, Vec<String>) {
         unsafe {
             let mut session = 0u32;
             let mut key = [0u16; 33]; // CCH_RM_SESSION_KEY + 1
@@ -483,9 +530,8 @@ mod rm {
             {
                 return (0, Vec::new());
             }
-            let file: Vec<u16> = wide(path);
-            if RmRegisterResources(session, Some(&[PCWSTR(file.as_ptr())]), None, None)
-                != WIN32_ERROR(0)
+            let files: Vec<PCWSTR> = paths.iter().map(|p| PCWSTR(wide(p).as_ptr())).collect();
+            if RmRegisterResources(session, Some(&files), None, None) != WIN32_ERROR(0)
             {
                 let _ = RmEndSession(session);
                 return (0, Vec::new());
