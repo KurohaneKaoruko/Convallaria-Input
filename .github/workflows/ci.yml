@@ -14,7 +14,7 @@ jobs:
         working-directory: crates/ime-core
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
