@@ -1,0 +1,17 @@
+# Rust 构建产物
+/target/
+
+# 生成的词典与 n-gram 二进制数据（由 tools/dict 生成，不入库）
+assets/dicts/*.bin
+assets/lm/*.bin
+
+# AI 工作流与规格目录（按要求不上传）
+.opencode/
+openspec/
+
+# IDE 与系统文件
+.idea/
+.vscode/
+*.rsuser
+*.suo
+Thumbs.db

@@ -1,0 +1,9 @@
+[package]
+name = "dict"
+version = "0.1.0"
+edition = "2024"
+description = "词典编译工具：文本词库 → 紧凑二进制（码表 + 词表 + 词频 + n-gram）"
+
+[dependencies]
+ime-core = { path = "../../crates/ime-core" }
+thiserror = "2"

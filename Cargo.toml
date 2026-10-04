@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/ime-core",
+    "platforms/windows",
+    "tools/dict",
+]
+
+# 轻量目标：发布构建做体积与速度优化
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = "symbols"
